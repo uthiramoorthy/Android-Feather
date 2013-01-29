@@ -86,6 +86,7 @@ import it.sephiroth.android.library.imagezoom.ImageViewTouch;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -116,7 +117,6 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.ViewGroup;
-import android.view.Window;
 import android.view.animation.AlphaAnimation;
 import android.view.animation.Animation;
 import android.view.animation.Animation.AnimationListener;
@@ -146,6 +146,7 @@ import com.aviary.android.feather.library.content.EffectEntry;
 import com.aviary.android.feather.library.content.FeatherIntent;
 import com.aviary.android.feather.library.filters.FilterLoaderFactory;
 import com.aviary.android.feather.library.filters.NativeFilterProxy;
+import com.aviary.android.feather.library.filters.NativeFilterProxy.JNIInitError;
 import com.aviary.android.feather.library.graphics.animation.Flip3dAnimation;
 import com.aviary.android.feather.library.graphics.drawable.IBitmapDrawable;
 import com.aviary.android.feather.library.log.LoggerFactory;
@@ -155,11 +156,13 @@ import com.aviary.android.feather.library.media.ExifInterfaceWrapper;
 import com.aviary.android.feather.library.services.FutureListener;
 import com.aviary.android.feather.library.services.LocalDataService;
 import com.aviary.android.feather.library.services.ThreadPoolService;
+import com.aviary.android.feather.library.services.drag.DragLayer;
 import com.aviary.android.feather.library.tracking.Tracker;
 import com.aviary.android.feather.library.utils.BitmapUtils;
 import com.aviary.android.feather.library.utils.IOUtils;
 import com.aviary.android.feather.library.utils.ImageLoader.ImageSizes;
 import com.aviary.android.feather.library.utils.ReflectionUtils;
+import com.aviary.android.feather.library.utils.SystemUtils;
 import com.aviary.android.feather.library.utils.UIConfiguration;
 import com.aviary.android.feather.receivers.FeatherSystemReceiver;
 import com.aviary.android.feather.utils.ThreadUtils;
@@ -196,13 +199,16 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	}
 
 	/** Version string number. */
-	public static final String SDK_VERSION = "2.1.5";
+	public static final String SDK_VERSION = "2.2.1";
 
 	/** Internal version number. */
-	public static final int SDK_INT = 65;
+	public static final int SDK_INT = 74;
 
 	/** SHA-1 version id. */
-	public static final String ID = "$Id: c3355dec68546ee7ff2ba3ca779b0a3795769d22 $";
+	public static final String ID = "$Id: ea259b84ab4c54948ab4d5eeb2e340ccfe6ee8e5 $";
+	
+	/** delay between click and panel opening */
+	private static final int TOOLS_OPEN_DELAY_TIME = 50;
 
 	/** The default result code. */
 	private int pResultCode = RESULT_CANCELED;
@@ -227,9 +233,6 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 	/** The main filter controller. */
 	protected FilterManager mFilterManager;
-
-	/** api key. */
-	protected String mApiKey = "";
 
 	/** tool list to show. */
 	protected List<String> mToolList;
@@ -273,53 +276,74 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	/** The toolbar main animator. */
 	private ViewFlipper mToolbarMainAnimator;
 	
+	/** the popup container */
+	private ViewGroup mPopupContainer;
+
+	private DragLayer mDragLayer;
+
 	/** Main image downloader task **/
 	private DownloadImageAsyncTask mDownloadTask;
 
-	/** The main ui handler. */
-	private Handler mUIHandler = new Handler() {
+	private static class MyUIHandler extends Handler {
+
+		private WeakReference<FeatherActivity> mParent;
+
+		MyUIHandler( FeatherActivity parent ) {
+			mParent = new WeakReference<FeatherActivity>( parent );
+		}
 
 		@Override
 		public void handleMessage( Message msg ) {
 			super.handleMessage( msg );
+			
+			logger.info( "handleMessage: " + msg.what );
 
-			switch ( msg.what ) {
-				case FilterManager.STATE_OPENING:
-					mToolbar.setClickable( false );
-					resetToolIndicator();
-					mToolbar.setTitle( mFilterManager.getCurrentEffect().labelResourceId );
-					break;
+			FeatherActivity parent = mParent.get();
+			if ( null != parent ) {
 
-				case FilterManager.STATE_OPENED:
-					mToolbar.setClickable( true );
-					mToolbar.setState( ToolbarView.STATE.STATE_APPLY, false );
-					break;
+				switch ( msg.what ) {
+					case FilterManager.STATE_OPENING:
+						parent.mToolbar.setClickable( false );
+						parent.resetToolIndicator();
+						break;
 
-				case FilterManager.STATE_CLOSING:
-					mToolbar.setClickable( false );
-					mImageView.setVisibility( View.VISIBLE );
-					break;
+					case FilterManager.STATE_OPENED:
+						parent.mToolbar.setClickable( true );
+						break;
 
-				case FilterManager.STATE_CLOSED:
-					mWorkspace.setEnabled( true );
-					mToolbar.setClickable( true );
-					mToolbar.setState( ToolbarView.STATE.STATE_SAVE, true );
-					mToolbar.setSaveEnabled( true );
-					mWorkspace.requestFocus();
-					break;
+					case FilterManager.STATE_CLOSING:
+						parent.mToolbar.setClickable( false );
+						parent.mImageView.setVisibility( View.VISIBLE );
+						break;
 
-				case FilterManager.STATE_DISABLED:
-					mWorkspace.setEnabled( false );
-					mToolbar.setClickable( false );
-					mToolbar.setSaveEnabled( false );
-					break;
+					case FilterManager.STATE_CLOSED:
+						parent.mWorkspace.setEnabled( true );
+						parent.mToolbar.setClickable( true );
+						parent.mToolbar.setState( ToolbarView.STATE.STATE_SAVE, true );
+						parent.mToolbar.setSaveEnabled( true );
+						parent.mWorkspace.requestFocus();
+						break;
 
-				case FilterManager.STATE_CONTENT_READY:
-					mImageView.setVisibility( View.GONE );
-					break;
+					case FilterManager.STATE_DISABLED:
+						parent.mWorkspace.setEnabled( false );
+						parent.mToolbar.setClickable( false );
+						parent.mToolbar.setSaveEnabled( false );
+						break;
+
+					case FilterManager.STATE_CONTENT_READY:
+						parent.mImageView.setVisibility( View.GONE );
+						break;
+
+					case FilterManager.STATE_READY:
+						parent.mToolbar.setTitle( parent.mFilterManager.getCurrentEffect().labelResourceId, false );
+						parent.mToolbar.setState( ToolbarView.STATE.STATE_APPLY, false );
+						break;
+				}
 			}
 		}
-	};
+	}
+
+	private MyUIHandler mUIHandler;
 
 	/** The default broadcast receiver. It receives messages from the {@link FeatherSystemReceiver} */
 	private BroadcastReceiver mDefaultReceiver = new BroadcastReceiver() {
@@ -354,27 +378,28 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		pResultCode = resultCode;
 		setResult( resultCode, data );
 	}
-
+	
 	@Override
 	public void onCreate( Bundle savedInstanceState ) {
+		
 		onPreCreate();
 
 		super.onCreate( savedInstanceState );
-		requestWindowFeature( Window.FEATURE_NO_TITLE );
+		
 		setContentView( R.layout.feather_main );
-
-		logger.info( "onCreate: " + savedInstanceState );
 
 		onInitializeUtils();
 		initializeUI();
+		
 		onRegisterReceiver();
-
+		
 		// initiate the filter manager
-		mFilterManager = new FilterManager( this, mUIHandler, mApiKey );
+		mUIHandler = new MyUIHandler( this );
+		mFilterManager = new FilterManager( this, mUIHandler, getApiKey() );
 		mFilterManager.setOnToolListener( this );
 		mFilterManager.setOnBitmapChangeListener( this );
+		mFilterManager.setDragLayer( mDragLayer );
 		
-
 		// first check the validity of the incoming intent
 		Uri srcUri = handleIntent( getIntent() );
 
@@ -383,7 +408,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 			finish();
 			return;
 		}
-		
+
 		LocalDataService data = mFilterManager.getService( LocalDataService.class );
 		data.setSourceImageUri( srcUri );
 
@@ -391,7 +416,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		loadImage( srcUri );
 
 		// initialize filters
-		initializeTools();
+		delayedInitializeTools();
 
 		logger.error( "MAX MEMORY", mFilterManager.getApplicationMaxMemory() );
 		Tracker.recordTag( "feather: opened" );
@@ -415,9 +440,23 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 * Initialize utility classes
 	 */
 	protected void onInitializeUtils() {
-		Constants.init( this );
 		UIUtils.init( this );
-		NativeFilterProxy.init( this );
+		Constants.init( this );
+		
+		final String api_key = getApiKey();
+		
+		JNIInitError result = NativeFilterProxy.init( this, null, api_key );
+		
+		if( result != JNIInitError.NoError ) {
+			Toast.makeText( getApplicationContext(), "Sorry an error occurred: " + result.name(), Toast.LENGTH_LONG ).show();
+			logger.error("Error initializing Aviary: " + result.name() );
+			finish();
+		}
+		
+		if( api_key == null || !(api_key.length() > 0) ) {
+			logger.error( "Attention. API-KEY cannot be found or is invalid" );
+			finish();
+		}
 	}
 
 	/*
@@ -452,10 +491,10 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 		mFilterManager.setOnBitmapChangeListener( null );
 		mFilterManager.setOnToolListener( null );
-		
+
 		mWorkspace.setOnPageChangeListener( null );
-		
-		if( null != mDownloadTask ){
+
+		if ( null != mDownloadTask ) {
 			mDownloadTask.setOnLoadListener( null );
 			mDownloadTask = null;
 		}
@@ -467,10 +506,19 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		mUIHandler = null;
 		mFilterManager = null;
 	}
+	
+	@Override
+	protected void onPause() {
+		super.onPause();
+		// here we tweak the default android animation between activities
+		// just comment the next line if you don't want to have custom animations
+		overridePendingTransition( R.anim.feather_app_zoom_enter_large, R.anim.feather_app_zoom_exit_large );
+	}
 
 	/**
 	 * Initialize ui.
 	 */
+	@SuppressWarnings("deprecation")
 	private void initializeUI() {
 		// forcing a horizontal repeatable background
 		findViewById( R.id.workspace_container ).setBackgroundDrawable(
@@ -549,7 +597,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 */
 	private void onRevert() {
 		Tracker.recordTag( "feather: reset image" );
-		
+
 		LocalDataService service = mFilterManager.getService( LocalDataService.class );
 		loadImage( service.getSourceImageUri() );
 	}
@@ -582,14 +630,14 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 					if ( !handled ) {
 						initWorkspace();
-						initializeTools();
+						delayedInitializeTools();
 					} else {
 						mHandler.post( new Runnable() {
 
 							@Override
 							public void run() {
 								initWorkspace();
-								initializeTools();
+								delayedInitializeTools();
 							}
 						} );
 					}
@@ -631,6 +679,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 * 
 	 * @see android.app.Activity#onOptionsItemSelected(android.view.MenuItem)
 	 */
+	@SuppressWarnings("deprecation")
 	@Override
 	public boolean onOptionsItemSelected( MenuItem item ) {
 
@@ -656,6 +705,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	/**
 	 * User clicked on cancel from the main menu
 	 */
+	@SuppressWarnings("deprecation")
 	private void onMenuCancel() {
 		if ( mFilterManager.getBitmapIsChanged() ) {
 			if ( mHideExitAlertConfirmation ) {
@@ -674,14 +724,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 * User clicked on the store main menu item
 	 */
 	private void onMenuFindMorePlugins() {
-		Intent intent = new Intent( Intent.ACTION_VIEW );
-		intent.setData( Uri.parse( "market://search?q=" + FeatherIntent.PLUGIN_BASE_PACKAGE + "*" ) );
-		try {
-			startActivity( intent );
-		} catch ( ActivityNotFoundException e ) {
-			e.printStackTrace();
-			Toast.makeText( getApplicationContext(), R.string.feather_activity_not_found, Toast.LENGTH_SHORT ).show();
-		}
+		mFilterManager.searchPlugin( -1 );
 		Tracker.recordTag( "menu: get_more" );
 	}
 
@@ -692,12 +735,12 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 *           the data
 	 */
 	protected void loadImage( Uri data ) {
-		
-		if( null != mDownloadTask ){
+
+		if ( null != mDownloadTask ) {
 			mDownloadTask.setOnLoadListener( null );
 			mDownloadTask = null;
 		}
-		
+
 		mDownloadTask = new DownloadImageAsyncTask( data );
 		mDownloadTask.setOnLoadListener( this );
 		mDownloadTask.execute( getBaseContext() );
@@ -708,7 +751,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 */
 	private void initWorkspace() {
 		mScreenRows = getResources().getInteger( R.integer.feather_config_portraitRows );
-		mScreenCols = UIUtils.getScreenOptimalColumns();
+		mScreenCols = getResources().getInteger( R.integer.toolCount );
 		mItemsPerPage = mScreenRows * mScreenCols;
 
 		mWorkspace.setHapticFeedbackEnabled( false );
@@ -725,6 +768,9 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	@Override
 	public void onContentChanged() {
 		super.onContentChanged();
+
+		mDragLayer = (DragLayer) findViewById( R.id.dragLayer );
+
 		mToolbar = (ToolbarView) findViewById( R.id.toolbar );
 		mBottomBarFlipper = (BottombarViewFlipper) findViewById( R.id.bottombar_view_flipper );
 
@@ -737,6 +783,8 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 		mToolbarMainAnimator = ( (ViewFlipper) mToolbar.findViewById( R.id.top_indicator_main ) );
 		mToolbarContentAnimator = ( (ViewFlipper) mToolbar.findViewById( R.id.top_indicator_panel ) );
+		
+		mPopupContainer = (ViewGroup) findViewById( R.id.feather_dialogs_container );
 
 		// update the progressbar animation drawable
 		AnimatedRotateDrawable d = new AnimatedRotateDrawable( getResources(), R.drawable.feather_spinner_white_16 );
@@ -760,6 +808,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 * 
 	 * @see android.app.Activity#onBackPressed()
 	 */
+	@SuppressWarnings("deprecation")
 	@Override
 	public void onBackPressed() {
 		if ( !mFilterManager.onBackPressed() ) {
@@ -808,19 +857,25 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	protected Uri handleIntent( Intent intent ) {
 
 		LocalDataService service = mFilterManager.getService( LocalDataService.class );
-		
+
 		if ( intent != null && intent.getData() != null ) {
 			Uri data = intent.getData();
+
+			if ( SystemUtils.isIceCreamSandwich() ) {
+				if ( data.toString().startsWith( "content://com.android.gallery3d.provider" ) ) {
+					// use the com.google provider, not the com.android provider ( for ICS only )
+					data = Uri.parse( data.toString().replace( "com.android.gallery3d", "com.google.android.gallery3d" ) );
+				}
+			}
 
 			Bundle extras = intent.getExtras();
 			if ( extras != null ) {
 				Uri destUri = (Uri) extras.getParcelable( Constants.EXTRA_OUTPUT );
-				mApiKey = extras.getString( Constants.API_KEY );
 
 				if ( destUri != null ) {
-					
+
 					service.setDestImageUri( destUri );
-					
+
 					String outputFormatString = extras.getString( Constants.EXTRA_OUTPUT_FORMAT );
 					if ( outputFormatString != null ) {
 						CompressFormat format = Bitmap.CompressFormat.valueOf( outputFormatString );
@@ -842,42 +897,43 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	}
 
 	/**
-	 * Load the current tools list
+	 * Load the current tools list in a separate thread
 	 */
-	private void initializeTools() {
-		
+	private void delayedInitializeTools() {
+
 		Thread t = new Thread( new Runnable() {
-			
+
 			@Override
 			public void run() {
 				final List<EffectEntry> listEntries = loadTools();
 				mHandler.post( new Runnable() {
-					
+
 					@Override
 					public void run() {
 						onToolsLoaded( listEntries );
 					}
 				} );
 			}
-		});
+		} );
 		t.start();
 	}
-	
-	private List<String> loadStandaloneTools(){
+
+	private List<String> loadStandaloneTools() {
 		// let's use a global try..catch
 		try {
 			// This is the preference class used in the standalone app
 			// if the tool list is empty, let's try to use
 			// the user defined toolset
-			Object instance = ReflectionUtils.invokeStaticMethod( "com.aviary.android.feather.utils.SettingsUtils", "getInstance", new Class[]{ Context.class }, this );
-			if( null != instance ){
+			Object instance = ReflectionUtils.invokeStaticMethod( "com.aviary.android.feather.utils.SettingsUtils", "getInstance",
+					new Class[] { Context.class }, this );
+			if ( null != instance ) {
 				Object toolList = ReflectionUtils.invokeMethod( instance, "getToolList" );
-				if( null != toolList && toolList instanceof String[] ){
+				if ( null != toolList && toolList instanceof String[] ) {
 					return Arrays.asList( (String[]) toolList );
 				}
 			}
-		} catch( Throwable t ){
-			
+		} catch ( Exception t ) {
+
 		}
 		return null;
 	}
@@ -886,11 +942,11 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		if ( null == mListEntries ) {
 			EffectLoaderService service = mFilterManager.getService( EffectLoaderService.class );
 			if ( service == null ) return null;
-			if ( mToolList == null ){
-				
+			if ( mToolList == null ) {
+
 				mToolList = loadStandaloneTools();
-				 
-				if( null == mToolList ){
+
+				if ( null == mToolList ) {
 					mToolList = Arrays.asList( FilterLoaderFactory.getDefaultFilters() );
 				}
 			}
@@ -905,10 +961,15 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 				entryMap.put( entry_name.name(), all_entries[i] );
 			}
 
+			if( !Constants.getValueFromIntent( Constants.EXTRA_FRAMES_ENABLE_EXTERNAL_PACKS, true ) ) {
+				entryMap.remove(  FilterLoaderFactory.Filters.BORDERS.name() );
+			}
+			
 			for ( String toolName : mToolList ) {
 				if ( !entryMap.containsKey( toolName ) ) continue;
 				listEntries.add( entryMap.get( toolName ) );
 			}
+			
 			return listEntries;
 		}
 		return mListEntries;
@@ -988,6 +1049,18 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		return mDrawingViewContainer;
 	}
 
+	@Override
+	public ViewGroup activatePopupContainer() {
+		mPopupContainer.setVisibility( View.VISIBLE );
+		return mPopupContainer;
+	}
+	
+	@Override
+	public void deactivatePopupContainer() {
+		mPopupContainer.removeAllViews();
+		mPopupContainer.setVisibility( View.GONE );
+	}
+
 	// ---------------------
 	// Toolbar events
 	// ---------------------
@@ -1030,52 +1103,51 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	public void onCancelClick() {
 		mFilterManager.onCancel();
 	}
-	
+
 	/**
-	 * load the original file EXIF data
-	 * and store the result into the local data instance
+	 * load the original file EXIF data and store the result into the local data instance
 	 */
 	protected void loadExif() {
 		logger.log( "loadExif" );
 		final LocalDataService data = mFilterManager.getService( LocalDataService.class );
 		ThreadPoolService thread = mFilterManager.getService( ThreadPoolService.class );
-		if( null != data && thread != null ){
+		if ( null != data && thread != null ) {
 			final String path = data.getSourceImagePath();
-			
+
 			FutureListener<Bundle> listener = new FutureListener<Bundle>() {
-				
+
 				@Override
 				public void onFutureDone( Future<Bundle> future ) {
 					try {
 						Bundle result = future.get();
-						if( null != result ){
+						if ( null != result ) {
 							data.setOriginalExifBundle( result );
 						}
-					} catch( Throwable e ){
+					} catch ( Throwable e ) {
 						e.printStackTrace();
 					}
 				}
 			};
-			
-			if( null != path ){
+
+			if ( null != path ) {
 				thread.submit( new ExifTask(), listener, path );
 			} else {
 				logger.warning( "orinal file path not available" );
 			}
 		}
 	}
-	
+
 	/**
 	 * Try to compute the original file absolute path
 	 */
-	protected void computeOriginalFilePath(){
+	protected void computeOriginalFilePath() {
 		final LocalDataService data = mFilterManager.getService( LocalDataService.class );
-		if( null != data ){
+		if ( null != data ) {
 			data.setSourceImagePath( null );
 			Uri uri = data.getSourceImageUri();
-			if( null != uri ){
+			if ( null != uri ) {
 				String path = IOUtils.getRealFilePath( this, uri );
-				if( null != path ){
+				if ( null != path ) {
 					data.setSourceImagePath( path );
 				}
 			}
@@ -1097,8 +1169,10 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 	@Override
 	public void onDownloadComplete( Bitmap result, ImageSizes sizes ) {
+		logger.log( "onDownloadComplete" );
+
 		mDownloadTask = null;
-		
+
 		mImageView.setImageBitmap( result, true, null, UIConfiguration.IMAGE_VIEW_MAX_ZOOM );
 
 		Animation animation = AnimationUtils.loadAnimation( this, android.R.anim.fade_in );
@@ -1108,13 +1182,12 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		mImageView.startAnimation( animation );
 
 		hideProgressLoader();
-		
-		int[] originalSize = {-1,-1};
-		if( null != sizes ){
+
+		int[] originalSize = { -1, -1 };
+		if ( null != sizes ) {
 			originalSize = sizes.getRealSize();
 			onImageSize( sizes.getOriginalSize(), sizes.getNewSize(), sizes.getBucketSize() );
 		}
-		
 
 		if ( mFilterManager != null ) {
 			if ( mFilterManager.getEnabled() ) {
@@ -1128,8 +1201,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 			logger.error( "original.size: " + originalSize[0] + "x" + originalSize[1] );
 			logger.error( "final.size: " + result.getWidth() + "x" + result.getHeight() );
 		}
-		
-		
+
 		computeOriginalFilePath();
 		loadExif();
 	}
@@ -1139,6 +1211,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 * 
 	 * @see com.aviary.android.feather.async_tasks.DownloadImageAsyncTask.OnImageDownloadListener#onDownloadError(java.lang.String)
 	 */
+	@SuppressWarnings("deprecation")
 	@Override
 	public void onDownloadError( String error ) {
 		logger.error( "onDownloadError", error );
@@ -1222,9 +1295,8 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 		mFilterManager.setEnabled( false );
 
 		LocalDataService service = mFilterManager.getService( LocalDataService.class );
-		
+
 		// Release bitmap memory
-		mImageView.clear();
 		Bundle myExtras = getIntent().getExtras();
 
 		// if request intent has "return-data" then the result bitmap
@@ -1242,7 +1314,6 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 				@Override
 				public void run() {
 					doSave( bitmap );
-					bitmap.recycle();
 				}
 			}, mHandler );
 		}
@@ -1258,7 +1329,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 		// result extras
 		Bundle extras = new Bundle();
-		
+
 		LocalDataService service = mFilterManager.getService( LocalDataService.class );
 		Uri saveUri = service.getDestImageUri();
 
@@ -1304,29 +1375,29 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 				b.recycle();
 			}
 		} );
-		
-		if( null != saveUri ){
+
+		if ( null != saveUri ) {
 			saveExif( saveUri );
 		}
 
 		mSaving = false;
 		finish();
 	}
-	
+
 	protected void saveExif( Uri uri ) {
 		logger.log( "saveExif: " + uri );
-		if( null != uri ){
+		if ( null != uri ) {
 			saveExif( uri.getPath() );
 		}
 	}
-	
+
 	protected void saveExif( String path ) {
 		logger.log( "saveExif: " + path );
-		
-		if( null == path ){
+
+		if ( null == path ) {
 			return;
 		}
-		
+
 		LocalDataService data = mFilterManager.getService( LocalDataService.class );
 		ExifInterfaceWrapper newexif = null;
 
@@ -1344,11 +1415,11 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 				try {
 					newexif.copyFrom( bundle );
 					newexif.setAttribute( ExifInterfaceWrapper.TAG_ORIENTATION, "0" );
-					newexif.setAttribute( ExifInterfaceWrapper.TAG_SOFTWARE, "Aviary " + SDK_VERSION );
+					newexif.setAttribute( ExifInterfaceWrapper.TAG_SOFTWARE, "Aviary for Android " + SDK_VERSION );
 
 					// implements this to include your own tags
 					onSaveCustomTags( newexif );
-					
+
 					newexif.saveAttributes();
 				} catch ( Throwable t ) {
 					t.printStackTrace();
@@ -1357,9 +1428,9 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 			}
 		}
 	}
-	
-	protected void onSaveCustomTags( ExifInterfaceWrapper exif ){
-		
+
+	protected void onSaveCustomTags( ExifInterfaceWrapper exif ) {
+
 	}
 
 	/*
@@ -1458,6 +1529,14 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	private void showInfoScreen() {
 
 		createInfoScreenAnimations( true );
+		
+		// Add the infoscreen view to the UI.
+		ViewGroup view = (ViewGroup) mViewFlipper.findViewById( R.id.infocreeen_container );
+		if( null != view && view.getChildCount() == 0 )
+		{
+			UIUtils.getLayoutInflater().inflate( R.layout.feather_infoscreen, view, true );
+		}
+		
 		mViewFlipper.setDisplayedChild( 1 );
 
 		TextView text = (TextView) mViewFlipper.findViewById( R.id.version_text );
@@ -1511,15 +1590,6 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 */
 	public void resetToolIndicator() {
 		mToolbarContentAnimator.setDisplayedChild( 0 );
-	}
-
-	/**
-	 * Gets the api key.
-	 * 
-	 * @return the api key
-	 */
-	String getApiKey() {
-		return mApiKey;
 	}
 
 	/**
@@ -1675,6 +1745,7 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 			if ( convertView == null ) {
 				convertView = mLayoutInflater.inflate( mResourceId, mWorkspace, false );
+				( (CellLayout) convertView ).setNumRows( mScreenRows );
 				( (CellLayout) convertView ).setNumCols( mScreenCols );
 			}
 
@@ -1734,6 +1805,11 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 					holder = new WorkspaceToolViewHolder();
 					holder.image = (ImageView) toolView.findViewById( R.id.tool_image );
 					holder.text = (TextView) toolView.findViewById( R.id.tool_text );
+
+					// if( null != UIUtils.getAppTypeFace() ){
+					// holder.text.setTypeface( UIUtils.getAppTypeFace() );
+					// }
+
 					toolView.setTag( holder );
 				}
 
@@ -1769,7 +1845,13 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 
 				@Override
 				public void onClick( View v ) {
-					if ( mWorkspace.isEnabled() ) mFilterManager.activateEffect( (EffectEntry) holder.image.getTag() );
+					mUIHandler.postDelayed( new Runnable() {
+						
+						@Override
+						public void run() {
+							if ( mWorkspace.isEnabled() ) mFilterManager.activateEffect( (EffectEntry) holder.image.getTag() );
+						}
+					}, TOOLS_OPEN_DELAY_TIME );
 				}
 			} );
 		}
@@ -1782,12 +1864,16 @@ public class FeatherActivity extends MonitoredActivity implements OnToolbarClick
 	 */
 	@Override
 	public void onPageChanged( int which, int old ) {
-		if( mWorkspace != null && mWorkspace.getAdapter() != null ) {
+		if ( mWorkspace != null && mWorkspace.getAdapter() != null ) {
 			if ( which == mWorkspace.getAdapter().getCount() - 2 && old == mWorkspace.getAdapter().getCount() - 1 ) {
 				if ( isInfoScreenVisible() ) {
 					hideInfoScreen();
 				}
 			}
 		}
+	}
+	
+	public FilterManager getController() {
+		return mFilterManager;
 	}
 }

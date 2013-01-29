@@ -1,14 +1,12 @@
 package com.aviary.android.feather;
 
 import android.app.Activity;
-import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.util.DisplayMetrics;
-import com.aviary.android.feather.library.log.LoggerFactory;
-import com.aviary.android.feather.library.utils.ReflectionUtils;
+import android.util.Log;
 import com.aviary.android.feather.library.utils.SystemUtils;
 
 // TODO: Auto-generated Javadoc
@@ -31,6 +29,8 @@ public class Constants {
 	public static final int BOGO_CPU_MEDIUM = 950;
 
 	public static final int ANDROID_SDK = android.os.Build.VERSION.SDK_INT;
+	
+	private static final String LOG_TAG = "constants";
 
 	/** The original Intent */
 	private static Intent mOriginalIntent = new Intent();
@@ -43,7 +43,6 @@ public class Constants {
 	 *           the activity
 	 */
 	public static void init( Activity activity ) {
-		LoggerFactory.log( "ANDROID_SDK: " + ANDROID_SDK );
 		initContext( activity );
 		initIntent( activity.getIntent() );
 	}
@@ -62,7 +61,6 @@ public class Constants {
 			} else {
 
 				int mhz = SystemUtils.getCpuMhz();
-				LoggerFactory.log( "CPU MHZ: " + mhz );
 
 				if ( mhz > 0 ) {
 					value = mhz >= MHZ_CPU_FAST;
@@ -78,10 +76,19 @@ public class Constants {
 
 	/**
 	 * Return is external packs are enabled
+	 * 
 	 * @return
 	 */
 	public static boolean getExternalPacksEnabled() {
 		return getValueFromIntent( EXTRA_EFFECTS_ENABLE_EXTERNAL_PACKS, true );
+	}
+	
+	/**
+	 * External Stickers are enabled
+	 * @return
+	 */
+	public static boolean getExternalStickersEnabled() {
+		return getValueFromIntent( EXTRA_STICKERS_ENABLE_EXTERNAL_PACKS, true );
 	}
 
 	/**
@@ -92,24 +99,29 @@ public class Constants {
 	 */
 	private static void initContext( Context context ) {
 		final DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-		final ActivityManager manager = (ActivityManager) context.getSystemService( Context.ACTIVITY_SERVICE );
-		MAX_MEMORY = manager.getMemoryClass();
 		SCREEN_WIDTH = metrics.widthPixels;
 		SCREEN_HEIGHT = metrics.heightPixels;
 
-		if ( ANDROID_SDK > 10 ) {
-			Integer largeMemory = (Integer) ReflectionUtils.invokeMethod( manager, "getLargeMemoryClass" );
-			LARGE_HEAP = largeMemory.intValue() > MAX_MEMORY;
-		}
+		double[] mem = new double[3];
+		getMemoryInfo( mem );
+		MAX_MEMORY = mem[2];
 	}
-
-	public static int getMaxMemory() {
-		return MAX_MEMORY;
-	}
-
-	public static boolean getLargeHeap() {
-		return LARGE_HEAP;
-	}
+	
+	/**
+	 * Get information about device memory
+	 * @param outValues
+	 */
+	public static void getMemoryInfo( double[] outValues ) {
+		double used = Double.valueOf( Runtime.getRuntime().totalMemory() ) / 1048576.0;
+		double total = Double.valueOf( Runtime.getRuntime().maxMemory() ) / 1048576.0;
+		double free = total - used;
+		
+		Log.d( LOG_TAG, "memory: " + free + " of " + total );
+		
+		outValues[0] = free;
+		outValues[1] = used;
+		outValues[2] = total;
+	}	
 
 	public static void update( Context context ) {
 		final DisplayMetrics metrics = context.getResources().getDisplayMetrics();
@@ -127,7 +139,8 @@ public class Constants {
 		if ( intent != null ) {
 			Bundle extras = intent.getExtras();
 			if ( extras != null ) {
-				mOriginalBundle = (Bundle) extras.clone();
+				// mOriginalBundle = (Bundle) extras.clone();
+				mOriginalBundle = (Bundle) extras;
 			}
 			mOriginalIntent = new Intent( intent );
 		}
@@ -210,13 +223,12 @@ public class Constants {
 		}
 	}
 
-
 	/**
 	 * Return the max allowed heap size for application.
 	 * 
 	 * @return the application max memory
 	 */
-	public static int getApplicationMaxMemory() {
+	public static double getApplicationMaxMemory() {
 		return MAX_MEMORY;
 	}
 
@@ -224,19 +236,13 @@ public class Constants {
 	static int MAX_IMAGE_SIZE_LOCAL = -1;
 
 	/** The max memory. */
-	static int MAX_MEMORY = -1;
-
-	/** large heap enabled for this app */
-	static boolean LARGE_HEAP = false;
+	static double MAX_MEMORY = -1;
 
 	/** The SCREEN width. */
 	public static int SCREEN_WIDTH = -1;
 
 	/** The SCREEN height. */
 	public static int SCREEN_HEIGHT = -1;
-
-	/** The Constant API_KEY. */
-	public static final String API_KEY = "API_KEY";
 
 	/** Result bitmap will be returned inline within the result Intent. */
 	public static final String EXTRA_RETURN_DATA = "return-data";
@@ -286,6 +292,13 @@ public class Constants {
 	 * the external filters.
 	 */
 	public static final String EXTRA_EFFECTS_ENABLE_EXTERNAL_PACKS = "effect-enable-external-pack";
+	
+	/**
+	 * By default feather offers to the final user the possibility to install external frames from the android market. If you want
+	 * to disable this feature you can pass this extra boolean to the launching intent as "false". The default behavior is to enable
+	 * the external frames.
+	 */	
+	public static final String EXTRA_FRAMES_ENABLE_EXTERNAL_PACKS = "frames-enable-external-pack";
 
 	/**
 	 * By default feather offers to the final user the possibility to install external stickers from the android market. If you want
@@ -313,16 +326,11 @@ public class Constants {
 	 */
 	public static final String EXTRA_OUTPUT_HIRES_SESSION_ID = "output-hires-session-id";
 
-	/**
-	 * By default some our effects come with extra borders. If you want to disable those borders pass this extra as a boolan 'false'
-	 */
-	public static final String EXTRA_EFFECTS_BORDERS_ENABLED = "effect-enable-borders";
-
 	public static final String EXTRA_APP_ID = "app-id";
-	
+
 	/**
-	 * Passing this key in the calling intent, with any value, will disable the haptic vibration
-	 * used in certain tools
+	 * Passing this key in the calling intent, with any value, will disable the haptic vibration used in certain tools
+	 * 
 	 * @since 2.1.5
 	 */
 	public static final String EXTRA_TOOLS_DISABLE_VIBRATION = "tools-vibration-disabled";

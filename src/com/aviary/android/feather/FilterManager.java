@@ -1,7 +1,9 @@
 package com.aviary.android.feather;
 
 import it.sephiroth.android.library.imagezoom.ImageViewTouchBase;
+import java.lang.ref.WeakReference;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.concurrent.Future;
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -18,7 +20,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
-import android.view.LayoutInflater;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
@@ -34,31 +36,33 @@ import com.aviary.android.feather.effects.AbstractEffectPanel.OptionPanel;
 import com.aviary.android.feather.effects.EffectLoaderService;
 import com.aviary.android.feather.library.content.EffectEntry;
 import com.aviary.android.feather.library.content.FeatherIntent;
-import com.aviary.android.feather.library.filters.FilterService;
 import com.aviary.android.feather.library.log.LoggerFactory;
 import com.aviary.android.feather.library.log.LoggerFactory.Logger;
 import com.aviary.android.feather.library.log.LoggerFactory.LoggerType;
 import com.aviary.android.feather.library.moa.MoaActionList;
 import com.aviary.android.feather.library.plugins.ExternalPacksTask;
-import com.aviary.android.feather.library.plugins.PluginManagerTask;
-import com.aviary.android.feather.library.plugins.PluginManagerTask.UpdateType;
+import com.aviary.android.feather.library.plugins.PluginFetchTask;
+import com.aviary.android.feather.library.plugins.PluginUpdaterTask;
+import com.aviary.android.feather.library.plugins.UpdateType;
 import com.aviary.android.feather.library.services.ConfigService;
 import com.aviary.android.feather.library.services.DragControllerService;
 import com.aviary.android.feather.library.services.EffectContext;
 import com.aviary.android.feather.library.services.EffectContextService;
-import com.aviary.android.feather.library.services.EffectsService;
+import com.aviary.android.feather.library.services.FileCacheService;
 import com.aviary.android.feather.library.services.FutureListener;
 import com.aviary.android.feather.library.services.HiResService;
+import com.aviary.android.feather.library.services.ImageCacheService;
 import com.aviary.android.feather.library.services.LocalDataService;
 import com.aviary.android.feather.library.services.PluginService;
-import com.aviary.android.feather.library.services.PluginService.FeatherInternalPack;
 import com.aviary.android.feather.library.services.PreferenceService;
 import com.aviary.android.feather.library.services.ServiceLoader;
 import com.aviary.android.feather.library.services.ThreadPoolService;
+import com.aviary.android.feather.library.services.ThreadPoolService.BackgroundCallable;
 import com.aviary.android.feather.library.services.drag.DragLayer;
 import com.aviary.android.feather.library.tracking.Tracker;
 import com.aviary.android.feather.library.utils.BitmapUtils;
 import com.aviary.android.feather.receivers.FeatherSystemReceiver;
+import com.aviary.android.feather.utils.UIUtils;
 import com.aviary.android.feather.widget.BottombarViewFlipper;
 import com.aviary.android.feather.widget.BottombarViewFlipper.OnPanelCloseListener;
 import com.aviary.android.feather.widget.BottombarViewFlipper.OnPanelOpenListener;
@@ -71,8 +75,7 @@ import com.aviary.android.feather.widget.ToolbarView;
  * @author alessandro
  * 
  */
-public final class FilterManager implements OnPreviewListener, OnApplyResultListener, EffectContext, OnErrorListener,
-		OnContentReadyListener, OnProgressListener {
+public final class FilterManager implements OnPreviewListener, OnApplyResultListener, EffectContext, OnErrorListener, OnContentReadyListener, OnProgressListener {
 
 	/**
 	 * The Interface FeatherContext.<br />
@@ -107,6 +110,20 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		 * @return the drawing image container
 		 */
 		ViewGroup getDrawingImageContainer();
+
+		/**
+		 * There's a special container drawn on top of all views, which can be used to add custom dialogs/popups.
+		 * 
+		 * This is invisible by default and must be activated in order to be used
+		 * 
+		 * @return
+		 */
+		ViewGroup activatePopupContainer();
+
+		/**
+		 * When the there's no need to use the popup container anymore, you must deactivate it
+		 */
+		void deactivatePopupContainer();
 
 		/**
 		 * Show tool progress.
@@ -196,7 +213,9 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	public static final int STATE_DISABLED = 4;
 
 	public static final int STATE_CONTENT_READY = 5;
-	
+
+	public static final int STATE_READY = 6;
+
 	public static final String LOG_TAG = "filter-manager";
 
 	/** The current bitmap. */
@@ -213,9 +232,6 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 
 	/** The current panel state. */
 	private STATE mCurrentState;
-
-	/** The main layout inflater. */
-	private LayoutInflater mLayoutInflater;
 
 	/** The main tool listener. */
 	private OnToolListener mToolListener;
@@ -241,6 +257,8 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 
 	private DragLayer mDragLayer;
 
+	private static Handler mPluingsHandler;
+
 	/**
 	 * Instantiates a new filter manager.
 	 * 
@@ -250,48 +268,38 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	 *           the handler
 	 */
 	public FilterManager( final FeatherContext context, final Handler handler, final String apiKey ) {
-		final Activity activity = (Activity) context;
+		logger = LoggerFactory.getLogger( "FilterManager", LoggerType.ConsoleLoggerType );
 		mContext = context;
 		mHandler = handler;
 		mApiKey = apiKey;
-		mLayoutInflater = (LayoutInflater) activity.getSystemService( Context.LAYOUT_INFLATER_SERVICE );
-		mDragLayer = (DragLayer) activity.findViewById( R.id.dragLayer );
-		logger = LoggerFactory.getLogger( "FilterManager", LoggerType.ConsoleLoggerType );
-
-		// mSessionId = StringUtils.getSha256( System.currentTimeMillis() + mApiKey );
+		mPluingsHandler = new PluginHandler( this );
 		mServiceLoader = new ServiceLoader<EffectContextService>( this );
-
 		initServices( context );
 
-		mConfiguration = new Configuration( getBaseActivity().getResources().getConfiguration() );
+		mConfiguration = new Configuration( ( (Context) context ).getResources().getConfiguration() );
 
 		setCurrentState( STATE.DISABLED );
 		mChanged = false;
 	}
 
+	public void setDragLayer( DragLayer view ) {
+		mDragLayer = view;
+	}
+
 	private synchronized void initServices( final FeatherContext context ) {
 		logger.info( "initServices" );
-		long t0 = System.currentTimeMillis();
-		
 		mServiceLoader.register( ThreadPoolService.class );
 		mServiceLoader.register( ConfigService.class );
-		mServiceLoader.register( FilterService.class );
 		mServiceLoader.register( PluginService.class );
 		mServiceLoader.register( EffectLoaderService.class );
 		mServiceLoader.register( PreferenceService.class );
 		mServiceLoader.register( HiResService.class );
 		mServiceLoader.register( DragControllerService.class );
-		mServiceLoader.register( EffectsService.class );
 		mServiceLoader.register( LocalDataService.class );
-
-		long t1 = System.currentTimeMillis();
-		
+		mServiceLoader.register( ImageCacheService.class );
+		mServiceLoader.register( FileCacheService.class );
 		updateInstalledPlugins( null );
 		updateAvailablePlugins();
-
-		long t2 = System.currentTimeMillis();
-		logger.log( "total time: " + (t2-t1) );
-		logger.log( "services time: " + (t2-t0) );
 	}
 
 	private void updateAvailablePlugins() {
@@ -299,11 +307,12 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		ThreadPoolService background = getService( ThreadPoolService.class );
 		if ( null != background ) {
 			if ( Constants.getExternalPacksEnabled() ) {
-				
+
 				FutureListener<Bundle> listener = new FutureListener<Bundle>() {
 
 					@Override
 					public void onFutureDone( Future<Bundle> future ) {
+						logger.log( "updateAvailablePlugins::completed" );
 						Bundle result = null;
 						try {
 							result = future.get();
@@ -311,13 +320,11 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 							logger.error( t.getMessage() );
 							return;
 						}
-
-						Message message = mBackgroundHandler.obtainMessage( MSG_BACKGROUND_EXTERNAL_TASK_COMPLETED );
-						message.setData( result );
-						mBackgroundHandler.sendMessage( message );
+						mPluingsHandler.post( new ExternalPluginTaskCompletedRunnable( result ) );
 					}
 				};
 
+				// submit the task to download the list of external content
 				background.submit( new ExternalPacksTask(), listener, null );
 			}
 		}
@@ -327,15 +334,15 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	private void updateInstalledPlugins( Bundle extras ) {
 		logger.info( "updateInstalledPlugins" );
 		ThreadPoolService background = getService( ThreadPoolService.class );
+
 		if ( background != null ) {
 			final boolean externalItemsEnabled = Constants.getExternalPacksEnabled();
-			PluginManagerTask pluginManager = new PluginManagerTask( PluginService.BASENAME, externalItemsEnabled ? mPluingsHandler : null );
 
-			FutureListener<PluginManagerTask.Result> listener = new FutureListener<PluginManagerTask.Result>() {
+			FutureListener<PluginFetchTask.Result> listener = new FutureListener<PluginFetchTask.Result>() {
 
 				@Override
-				public void onFutureDone( Future<PluginManagerTask.Result> future ) {
-					PluginManagerTask.Result result;
+				public void onFutureDone( Future<PluginFetchTask.Result> future ) {
+					PluginFetchTask.Result result;
 
 					try {
 						result = future.get();
@@ -344,13 +351,22 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 						return;
 					}
 
-					Message message = mBackgroundHandler.obtainMessage( MSG_BACKGROUND_PLUGIN_TASK_COMPLETED, result );
-					mBackgroundHandler.sendMessage( message );
-
+					mPluingsHandler.post( new PluginTaskCompletedRunnable( result ) );
 				}
 			};
 
-			background.submit( pluginManager, listener, extras );
+			BackgroundCallable<Bundle, PluginFetchTask.Result> task;
+
+			if ( null == extras ) {
+				// first time
+				task = new PluginFetchTask();
+			} else {
+				// when a plugin is changed
+				task = new PluginUpdaterTask( externalItemsEnabled ? mPluingsHandler : null );
+			}
+
+			background.submit( task, listener, extras );
+
 		} else {
 			logger.error( "failed to retrieve ThreadPoolService" );
 		}
@@ -417,7 +433,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 			setCurrentState( STATE.OPENING );
 			prepareEffectPanel( effect, tag );
 
-			Tracker.recordTag( mCurrentEntry.name.name().toLowerCase() + ": opened" );
+			Tracker.recordTag( mCurrentEntry.name.name().toLowerCase( Locale.US ) + ": opened" );
 			mContext.getBottomBar().setOnPanelOpenListener( new OnPanelOpenListener() {
 
 				@Override
@@ -450,24 +466,20 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		}
 		mServiceLoader.dispose();
 		mContext = null;
-		mLayoutInflater = null;
 		mToolListener = null;
 		mBitmapChangeListener = null;
-		
-		mBackgroundHandler.removeMessages( MSG_BACKGROUND_PLUGIN_TASK_COMPLETED );
-		mBackgroundHandler.removeMessages( MSG_BACKGROUND_EXTERNAL_TASK_COMPLETED );
-		
+
 		System.gc();
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see com.aviary.android.feather.library.services.EffectContext#getApplicationMaxMemory()
-	 */
 	@Override
-	public int getApplicationMaxMemory() {
+	public double getApplicationMaxMemory() {
 		return Constants.getApplicationMaxMemory();
+	}
+
+	@Override
+	public void getRuntimeMemoryInfo( double[] outValues ) {
+		Constants.getMemoryInfo( outValues );
 	}
 
 	/*
@@ -614,10 +626,10 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		}
 
 		mBitmap = bitmap;
-		
+
 		LocalDataService dataService = getService( LocalDataService.class );
 		dataService.setSourceImageSize( originalSize );
-		
+
 		mChanged = false;
 		setCurrentState( STATE.CLOSED_CONFIRMED );
 		initHiResService();
@@ -670,11 +682,6 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		}
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see com.aviary.android.feather.library.services.EffectContext#cancel()
-	 */
 	@Override
 	public void cancel() {
 
@@ -683,7 +690,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		if ( !getEnabled() || !isOpened() ) return;
 		if ( mCurrentEffect == null ) throw new IllegalStateException( "there is no current effect active in the context" );
 
-		Tracker.recordTag( mCurrentEntry.name.name().toLowerCase() + ": cancelled" );
+		Tracker.recordTag( mCurrentEntry.name.name().toLowerCase( Locale.US ) + ": cancelled" );
 
 		// send the cancel event to the effect
 		mCurrentEffect.onCancelled();
@@ -748,7 +755,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	@Override
 	public void onComplete( final Bitmap result, MoaActionList actions, HashMap<String, String> trackingAttributes ) {
 		logger.info( "onComplete: " + android.os.Debug.getNativeHeapAllocatedSize() );
-		Tracker.recordTag( mCurrentEntry.name.name().toLowerCase() + ": applied", trackingAttributes );
+		Tracker.recordTag( mCurrentEntry.name.name().toLowerCase( Locale.US ) + ": applied", trackingAttributes );
 
 		if ( result != null ) {
 			if ( mCurrentEffect instanceof ContentPanel ) {
@@ -833,15 +840,13 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	 */
 	@Override
 	public void onError( final String error ) {
-		new AlertDialog.Builder( (Activity) mContext ).setTitle( R.string.generic_error_title ).setMessage( error )
-				.setIcon( android.R.drawable.ic_dialog_alert ).show();
+		new AlertDialog.Builder( (Activity) mContext ).setTitle( R.string.generic_error_title ).setMessage( error ).setIcon( android.R.drawable.ic_dialog_alert ).show();
 	}
 
 	@Override
 	public void onError( final String error, int yesLabel, OnClickListener yesListener, int noLabel, OnClickListener noListener ) {
 
-		new AlertDialog.Builder( (Activity) mContext ).setTitle( R.string.generic_error_title ).setMessage( error )
-				.setPositiveButton( yesLabel, yesListener ).setNegativeButton( noLabel, noListener )
+		new AlertDialog.Builder( (Activity) mContext ).setTitle( R.string.generic_error_title ).setMessage( error ).setPositiveButton( yesLabel, yesListener ).setNegativeButton( noLabel, noListener )
 				.setIcon( android.R.drawable.ic_dialog_alert ).show();
 
 	}
@@ -877,6 +882,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	@Override
 	public void onReady( final AbstractEffectPanel panel ) {
 		mHandler.sendEmptyMessage( STATE_CONTENT_READY );
+		mHandler.sendEmptyMessage( STATE_READY );
 	}
 
 	/**
@@ -889,7 +895,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		if ( !getEnabled() || !isClosed() ) throw new IllegalStateException( "Cannot replace bitmap. Not active nor closed!" );
 
 		LocalDataService dataService = getService( LocalDataService.class );
-		
+
 		if ( ( mBitmap != null ) && !mBitmap.isRecycled() ) {
 			logger.warning( "[recycle] original Bitmap: " + mBitmap );
 			mBitmap.recycle();
@@ -897,8 +903,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		}
 		mChanged = false;
 		mBitmap = bitmap;
-		
-		
+
 		dataService.setSourceImageSize( originalSize );
 
 		HiResService service = getService( HiResService.class );
@@ -931,12 +936,12 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		View drawing_child = null;
 
 		if ( effect instanceof OptionPanel ) {
-			option_child = ( (OptionPanel) effect ).getOptionView( mLayoutInflater, mContext.getOptionsPanelContainer() );
+			option_child = ( (OptionPanel) effect ).getOptionView( UIUtils.getLayoutInflater(), mContext.getOptionsPanelContainer() );
 			mContext.getOptionsPanelContainer().addView( option_child );
 		}
 
 		if ( effect instanceof ContentPanel ) {
-			drawing_child = ( (ContentPanel) effect ).getContentView( mLayoutInflater );
+			drawing_child = ( (ContentPanel) effect ).getContentView( UIUtils.getLayoutInflater() );
 			drawing_child.setLayoutParams( new LayoutParams( LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT ) );
 			mContext.getDrawingImageContainer().addView( drawing_child );
 		}
@@ -981,20 +986,30 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 				case OPENED:
 					mCurrentEffect.onActivate();
 					mHandler.sendEmptyMessage( FilterManager.STATE_OPENED );
+
+					if ( !( mCurrentEffect instanceof ContentPanel ) ) {
+						mHandler.sendEmptyMessage( STATE_READY );
+					}
+
 					break;
 
 				case CLOSING:
 					mHandler.sendEmptyMessage( FilterManager.STATE_CLOSING );
-					mHandler.post( new Runnable() {
+
+					mCurrentEffect.onDeactivate();
+					if ( mCurrentEffect instanceof ContentPanel ) {
+						( (ContentPanel) mCurrentEffect ).setOnReadyListener( null );
+					}
+
+					mHandler.postDelayed( new Runnable() {
 
 						@Override
 						public void run() {
-							mCurrentEffect.onDeactivate();
 							if ( null != mBitmapChangeListener ) mBitmapChangeListener.onClearColorFilter();
-							if ( mCurrentEffect instanceof ContentPanel ) ( (ContentPanel) mCurrentEffect ).setOnReadyListener( null );
 							mContext.getDrawingImageContainer().removeAllViews();
+							mContext.deactivatePopupContainer();
 						}
-					} );
+					}, 100 );
 					break;
 
 				case CLOSED_CANCEL:
@@ -1014,8 +1029,7 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 
 					mHandler.sendEmptyMessage( FilterManager.STATE_CLOSED );
 
-					if ( ( newState == STATE.CLOSED_CONFIRMED ) && ( previousState != STATE.DISABLED ) )
-						if ( mToolListener != null ) mToolListener.onToolCompleted();
+					if ( ( newState == STATE.CLOSED_CONFIRMED ) && ( previousState != STATE.DISABLED ) ) if ( mToolListener != null ) mToolListener.onToolCompleted();
 					System.gc();
 					break;
 
@@ -1094,69 +1108,47 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 		updateInstalledPlugins( intent.getExtras() );
 	}
 
-	private static final int MSG_BACKGROUND_EXTERNAL_TASK_COMPLETED = 10;
-	private static final int MSG_BACKGROUND_PLUGIN_TASK_COMPLETED = 11;
+	private static class PluginHandler extends Handler {
 
-	private Handler mBackgroundHandler = new Handler() {
+		WeakReference<EffectContext> mContext;
 
-		@Override
-		public void handleMessage( Message msg ) {
-
-			logger.info( "handleMessage: " + msg );
-
-			PluginService pluginService;
-
-			switch ( msg.what ) {
-
-				case MSG_BACKGROUND_PLUGIN_TASK_COMPLETED:
-					// plugin manager task completed
-					PluginManagerTask.Result presult = (PluginManagerTask.Result) msg.obj;
-					pluginService = getService( PluginService.class );
-					if ( null != pluginService ) {
-						pluginService.update( presult.installed, presult.delta );
-					}
-
-					break;
-
-				case MSG_BACKGROUND_EXTERNAL_TASK_COMPLETED:
-					// external task completed
-					pluginService = getService( PluginService.class );
-					if ( pluginService != null ) {
-						pluginService.updateExternalPackages( msg.getData() );
-					}
-					break;
-			}
-			super.handleMessage( msg );
+		public PluginHandler( EffectContext context ) {
+			mContext = new WeakReference<EffectContext>( context );
 		}
-	};
-
-	private Handler mPluingsHandler = new Handler() {
 
 		@Override
 		public void handleMessage( Message msg ) {
 
-			UpdateType update = (UpdateType) msg.obj;
-			EffectsService service = getService( EffectsService.class );
-			PluginService pluginService = getService( PluginService.class );
-			FeatherInternalPack pack = (pluginService.new FeatherInternalPack( update ));
-			logger.info( "plugin.handler: " + msg.what + ", package: " + update.packageName );
+			EffectContext effectContext = mContext.get();
+			if ( null != effectContext ) {
 
-			switch ( msg.what ) {
-				case PluginManagerTask.MSG_PLUING_ADD:
-					service.addSharedLibrary( getBaseContext(), pack );
-					break;
+				Context context = effectContext.getBaseContext();
+				UpdateType update = (UpdateType) msg.obj;
+				PluginService service = effectContext.getService( PluginService.class );
 
-				case PluginManagerTask.MSG_PLUING_REMOVE:
-					if ( service.installed( pack ) ) {
-						service.removeSharedLibrary( getBaseContext(), pack  );
-					}
-					break;
+				final String packagename = update.getPackageName();
+				final int pluginType = update.getPluginType();
 
-				case PluginManagerTask.MSG_PLUING_REPLACE:
-					if ( service.removeSharedLibrary( getBaseContext(), pack ) ) {
-						service.addSharedLibrary( getBaseContext(), pack );
-					}
-					break;
+				Log.d( LOG_TAG, "PluginHandler::handleMessage. " + msg.what + ", update:" + update.toString() );
+
+				switch ( msg.what ) {
+					case PluginUpdaterTask.MSG_PLUING_ADD:
+						service.install( context, packagename, pluginType );
+						break;
+
+					case PluginUpdaterTask.MSG_PLUING_REMOVE:
+						if ( service.installed( packagename ) ) {
+							service.uninstall( context, packagename );
+						}
+						break;
+
+					case PluginUpdaterTask.MSG_PLUING_REPLACE:
+						if ( service.uninstall( context, packagename ) ) {
+							service.install( context, packagename, pluginType );
+						}
+						break;
+				}
+
 			}
 
 		};
@@ -1223,20 +1215,46 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	}
 
 	@Override
-	public void downloadPlugin( final String packageName, final int type ) {
-		logger.info( "downloadPlugins: " + packageName + ", type: " + type );
+	public void setPanelApplyStatusEnabled( boolean enabled ) {
+		mContext.getToolbar().setApplyVisibility( enabled );
+	}
 
-		final String referrer = getBaseContext().getPackageName();
+	@Override
+	public void downloadPlugin( final String packageName, final int type ) {
+		searchOrDownloadPlugin( packageName, type, false );
+	}
+
+	@Override
+	public void searchPlugin( final int type ) {
+
+		String name = FeatherIntent.PluginType.getName( type );
+		String packageName = FeatherIntent.PLUGIN_BASE_PACKAGE;
+		if ( null != name ) {
+			packageName = packageName + name + ".*";
+		} else {
+			packageName = packageName + "*";
+		}
+
+		searchOrDownloadPlugin( packageName, type, true );
+	}
+
+	public void searchOrDownloadPlugin( final String packageName, final int type, final boolean search ) {
+		logger.info( "searchOrDownloadPlugin: " + packageName + ", search: " + search );
 
 		Intent intent = new Intent( Intent.ACTION_VIEW );
-		intent.setData( Uri.parse( "market://details?id=" + packageName + "&referrer=" + referrer ) );
+		if ( search )
+			intent.setData( Uri.parse( "market://search?q=" + packageName ) );
+		else
+			intent.setData( Uri.parse( "market://details?id=" + packageName ) );
 
 		try {
 
-			HashMap<String, String> attrs = new HashMap<String, String>();
-			attrs.put( "assetType", FeatherIntent.PluginType.getName( type ) );
-			Tracker.recordTag( "content: addMoreClicked", attrs );
-
+			String name = FeatherIntent.PluginType.getName( type );
+			if ( null != name ) {
+				HashMap<String, String> attrs = new HashMap<String, String>();
+				attrs.put( "assetType", name );
+				Tracker.recordTag( "content: addMoreClicked", attrs );
+			}
 			getBaseContext().startActivity( intent );
 		} catch ( ActivityNotFoundException e ) {
 			Toast.makeText( getBaseContext(), R.string.feather_activity_not_found, Toast.LENGTH_SHORT ).show();
@@ -1247,5 +1265,38 @@ public final class FilterManager implements OnPreviewListener, OnApplyResultList
 	@Override
 	public DragLayer getDragLayer() {
 		return mDragLayer;
+	}
+
+	private class PluginTaskCompletedRunnable implements Runnable {
+
+		PluginFetchTask.Result mResult;
+
+		public PluginTaskCompletedRunnable( final PluginFetchTask.Result result ) {
+			mResult = result;
+		}
+
+		@Override
+		public void run() {
+			PluginService pluginService = getService( PluginService.class );
+			if ( null != pluginService ) pluginService.update( mResult.installed, mResult.delta );
+		}
+	}
+
+	private class ExternalPluginTaskCompletedRunnable implements Runnable {
+
+		Bundle mResult;
+
+		public ExternalPluginTaskCompletedRunnable( final Bundle result ) {
+			mResult = result;
+		}
+
+		@Override
+		public void run() {
+			PluginService pluginService = getService( PluginService.class );
+			if ( null != pluginService ) {
+				// TODO: if the download failed then restart the ExternalPacksTask after a delay
+				pluginService.updateExternalPackages( mResult );
+			}
+		}
 	}
 }

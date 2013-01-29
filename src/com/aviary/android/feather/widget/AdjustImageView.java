@@ -3,8 +3,10 @@ package com.aviary.android.feather.widget;
 import it.sephiroth.android.library.imagezoom.easing.Easing;
 import it.sephiroth.android.library.imagezoom.easing.Expo;
 import it.sephiroth.android.library.imagezoom.easing.Linear;
+import android.annotation.SuppressLint;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BlurMaskFilter;
@@ -33,10 +35,8 @@ import android.widget.ImageView;
 import android.widget.RemoteViews.RemoteView;
 import com.aviary.android.feather.R;
 import com.aviary.android.feather.library.graphics.Point2D;
-import com.aviary.android.feather.library.log.LoggerFactory;
-import com.aviary.android.feather.library.log.LoggerFactory.Logger;
-import com.aviary.android.feather.library.log.LoggerFactory.LoggerType;
 import com.aviary.android.feather.library.utils.ReflectionUtils;
+import com.aviary.android.feather.library.utils.ReflectionUtils.ReflectionException;
 
 // TODO: Auto-generated Javadoc
 /**
@@ -52,6 +52,7 @@ import com.aviary.android.feather.library.utils.ReflectionUtils;
  * @attr ref android.R.styleable#ImageView_scaleType
  * @attr ref android.R.styleable#ImageView_cropToPadding
  */
+@SuppressLint("NewApi")
 @RemoteView
 public class AdjustImageView extends View {
 
@@ -114,6 +115,8 @@ public class AdjustImageView extends View {
 	/** The m draw matrix. */
 	private Matrix mDrawMatrix = null;
 
+	private Matrix mTempMatrix = new Matrix();
+
 	/** The m rotate matrix. */
 	private Matrix mRotateMatrix = new Matrix();
 
@@ -147,25 +150,26 @@ public class AdjustImageView extends View {
 
 	/** reset animation time. */
 	int resetAnimTime = 200;
+	
+	private PointF mCenter;
 
 	Path mClipPath = new Path();
 	Path mInversePath = new Path();
 	Rect mViewDrawRect = new Rect();
+	RectF mViewInvertRect = new RectF();
 	Paint mOutlinePaint = new Paint();
 	Paint mOutlineFill = new Paint();
 	RectF mDrawRect;
-	PointF mCenter = new PointF();
 	Path mLinesPath = new Path();
 	Paint mLinesPaint = new Paint();
 	Paint mLinesPaintShadow = new Paint();
-	Drawable mResizeDrawable;
+	// Drawable Drawable;
+	Drawable mStraightenDrawable;
 	int handleWidth, handleHeight;
-	final int grid_rows = 3;
-	final int grid_cols = 3;	
+	final int grid_rows = 8;
+	final int grid_cols = 8;
 
 	private boolean mEnableFreeRotate;
-
-	static Logger logger = LoggerFactory.getLogger( "rotate", LoggerType.ConsoleLoggerType );
 
 	/**
 	 * Sets the reset anim duration.
@@ -217,9 +221,7 @@ public class AdjustImageView extends View {
 
 	/** The Constant sScaleTypeArray. */
 	@SuppressWarnings("unused")
-	private static final ScaleType[] sScaleTypeArray = {
-		ScaleType.MATRIX, ScaleType.FIT_XY, ScaleType.FIT_START, ScaleType.FIT_CENTER, ScaleType.FIT_END, ScaleType.CENTER,
-		ScaleType.CENTER_CROP, ScaleType.CENTER_INSIDE };
+	private static final ScaleType[] sScaleTypeArray = { ScaleType.MATRIX, ScaleType.FIT_XY, ScaleType.FIT_START, ScaleType.FIT_CENTER, ScaleType.FIT_END, ScaleType.CENTER, ScaleType.CENTER_CROP, ScaleType.CENTER_INSIDE };
 
 	/**
 	 * Instantiates a new adjust image view.
@@ -294,16 +296,20 @@ public class AdjustImageView extends View {
 		mOutlineFill.setAntiAlias( false );
 		mOutlineFill.setColor( highlight_outside_color );
 		mOutlineFill.setDither( false );
-		
-		ReflectionUtils.invokeMethod( mOutlineFill, "setHinting", new Class<?>[]{ int.class }, 0 );
+
+		try {
+			ReflectionUtils.invokeMethod( mOutlineFill, "setHinting", new Class<?>[] { int.class }, 0 );
+		} catch ( ReflectionException e ) {}
 
 		mLinesPaint.setStrokeWidth( highlight_stroke_internal_width );
 		mLinesPaint.setAntiAlias( false );
 		mLinesPaint.setDither( false );
 		mLinesPaint.setStyle( Paint.Style.STROKE );
 		mLinesPaint.setColor( highlight_stroke_internal_color );
-		ReflectionUtils.invokeMethod( mLinesPaint, "setHinting", new Class<?>[]{ int.class }, 0 );
-		
+		try {
+			ReflectionUtils.invokeMethod( mLinesPaint, "setHinting", new Class<?>[] { int.class }, 0 );
+		} catch ( ReflectionException e ) {}
+
 		mLinesPaintShadow.setStrokeWidth( highlight_stroke_internal_width );
 		mLinesPaintShadow.setAntiAlias( true );
 		mLinesPaintShadow.setColor( Color.BLACK );
@@ -314,38 +320,26 @@ public class AdjustImageView extends View {
 		mOutlinePaintAlpha = mOutlinePaint.getAlpha();
 		mLinesAlpha = mLinesPaint.getAlpha();
 		mLinesShadowAlpha = mLinesPaintShadow.getAlpha();
-		
+
 		mOutlinePaint.setAlpha( 0 );
 		mOutlineFill.setAlpha( 0 );
 		mLinesPaint.setAlpha( 0 );
 		mLinesPaintShadow.setAlpha( 0 );
 
 		android.content.res.Resources resources = getContext().getResources();
-		mResizeDrawable = resources.getDrawable( R.drawable.feather_highlight_crop_handle );
-
-		double w = mResizeDrawable.getIntrinsicWidth();
-		double h = mResizeDrawable.getIntrinsicHeight();
-
+		mStraightenDrawable = resources.getDrawable( R.drawable.feather_straighten_knob );
+		double w = mStraightenDrawable.getIntrinsicWidth();
+		double h = mStraightenDrawable.getIntrinsicHeight();
 		handleWidth = (int) Math.ceil( w / 2.0 );
 		handleHeight = (int) Math.ceil( h / 2.0 );
-	}
-	
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#verifyDrawable(android.graphics.drawable.Drawable)
-	 */
+	}
+
 	@Override
 	protected boolean verifyDrawable( Drawable dr ) {
 		return mDrawable == dr || super.verifyDrawable( dr );
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#invalidateDrawable(android.graphics.drawable.Drawable)
-	 */
 	@Override
 	public void invalidateDrawable( Drawable dr ) {
 		if ( dr == mDrawable ) {
@@ -360,11 +354,6 @@ public class AdjustImageView extends View {
 		}
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#onSetAlpha(int)
-	 */
 	@Override
 	protected boolean onSetAlpha( int alpha ) {
 		if ( getBackground() == null ) {
@@ -379,13 +368,13 @@ public class AdjustImageView extends View {
 		return false;
 	}
 
-	private boolean isDown;
-	private double originalAngle;
-
 	private PointF getCenter() {
-		final int vwidth = getWidth() - getPaddingLeft() - getPaddingRight();
-		final int vheight = getHeight() - getPaddingTop() - getPaddingBottom();
-		return new PointF( (float) vwidth / 2, (float) vheight / 2 );
+		if ( null == mCenter ) {
+			final int vwidth = getWidth() - getPaddingLeft() - getPaddingRight();
+			final int vheight = getHeight() - getPaddingTop() - getPaddingBottom();
+			mCenter = new PointF( (float) vwidth / 2, (float) vheight / 2 );
+		}
+		return mCenter;
 	}
 
 	private RectF getViewRect() {
@@ -398,32 +387,12 @@ public class AdjustImageView extends View {
 		return new RectF( 0, 0, mDrawableWidth, mDrawableHeight );
 	}
 
-	private void onTouchStart( float x, float y ) {
-		isDown = true;
-		PointF current = new PointF( x, y );
-		PointF center = getCenter();
-		double currentAngle = getRotationFromMatrix( mRotateMatrix );
-		originalAngle = Point2D.angle360( currentAngle + Point2D.angleBetweenPoints( center, current ) );
+	private void onTouchStart() {
 
-		if( mFadeHandlerStarted ){
-			fadeinGrid( 300 );
+		if ( mFadeHandlerStarted ) {
+			fadeinGrid( 100 );
 		} else {
-			fadeinOutlines( 600 );
-		}
-	}
-
-	private void onTouchMove( float x, float y ) {
-		if ( isDown ) {
-			PointF current = new PointF( x, y );
-			PointF center = getCenter();
-
-			float angle = (float) Point2D.angle360( originalAngle - Point2D.angleBetweenPoints( center, current ) );
-
-			logger.log( "ANGLE: " + angle + " .. " + getAngle90( angle ) );
-
-			setImageRotation( angle, false );
-			mRotation = angle;
-			invalidate();
+			fadeinOutlines( 200 );
 		}
 	}
 
@@ -448,31 +417,378 @@ public class AdjustImageView extends View {
 			mRotateMatrix.setScale( fScale, fScale, center.x, center.y );
 			mRotateMatrix.postRotate( (float) angle, center.x, center.y );
 		}
+
 	}
 
-	private void onTouchUp( float x, float y ) {
-		isDown = false;
-		setImageRotation( mRotation, true );
+	private void onTouchUp() {
 		invalidate();
-		fadeoutGrid( 300 );
+		fadeoutGrid( 200 );
 	}
+
+	boolean straightenStarted = false;
+	double previousStraightenAngle = 0;
+	double prevGrowth = 1;
+	double currentNewPosition;
+	boolean testStraighten = true;
+	double prevGrowthAngle = 0;
+	float currentGrowth = 0;
+	Matrix mStraightenMatrix = new Matrix();
+	double previousAngle = 0;
+	boolean intersectPoints = true;
+	boolean portrait = false;
+	int orientation = 0; // the orientation of the screen, whether in landscape or portrait
+
+	public double getGrowthFactor() {
+		return prevGrowth;
+	}
+
+	public double getStraightenAngle() {
+		return previousStraightenAngle;
+	}
+
+	/**
+	 * 
+	 * Calculates the new angle and size of of the image through matrix and geometric operations
+	 * 
+	 * @param angleDifference
+	 *           - difference between previous angle and current angle
+	 * @param direction
+	 *           - if there is an increase or decrease in angle
+	 * @param newPosition
+	 *           - the new destination angle
+	 */
+	private void setStraightenRotation( double newPosition ) {
+
+
+		// angle here is the difference between previous angle and new angle
+		// you need to take advantage of the third parameter, newPosition
+		double growthFactor = 1;
+
+		// newPosition = newPosition / 2;
+
+		currentNewPosition = newPosition;
+		
+		PointF center = getCenter();
+
+		mStraightenMatrix.postRotate( (float) -previousStraightenAngle, center.x, center.y );
+
+		mStraightenMatrix.postRotate( (float) currentNewPosition, center.x, center.y );
+		previousStraightenAngle = currentNewPosition;
+
+		double divideGrowth = 1 / prevGrowth;
+		mStraightenMatrix.postScale( (float) divideGrowth, (float) divideGrowth, center.x, center.y );
+
+		prevGrowthAngle = currentNewPosition;
+
+		if ( portrait ) {
+			// this algorithm works slightly differently between landscape and portrait images because of the proportions
+
+			final double sin_rad = Math.sin( Math.toRadians( currentNewPosition ) );
+			final double cos_rad = Math.cos( Math.toRadians( currentNewPosition ) );
+
+			float[] testPoint = {
+				(float) ( imageCaptureRegion.left + sin_rad * getPaddingLeft() + cos_rad * getPaddingLeft() ), (float) ( imageCaptureRegion.top - sin_rad * getPaddingTop() + cos_rad * getPaddingLeft() ),
+				(float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() ), (float) ( imageCaptureRegion.top - sin_rad * getPaddingTop() + cos_rad * getPaddingLeft() ),
+				(float) ( imageCaptureRegion.left + sin_rad * getPaddingLeft() + cos_rad * getPaddingLeft() ), (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() ),
+				(float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() ), (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() ) };
+
+			mStraightenMatrix.mapPoints( testPoint );
+
+			/**
+			 * ax = trueRect.left+getPaddingLeft(); ay = trueRect.top+getPaddingTop(); bx = trueRect.right+getPaddingRight(); by =
+			 * trueRect.top+getPaddingTop(); cx = trueRect.left+getPaddingLeft(); cy = trueRect.bottom+getPaddingBottom(); dx =
+			 * trueRect.right+getPaddingRight(); dy = trueRect.bottom+getPaddingBottom();
+			 */
+
+			float x1 = (float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() );
+			float y1 = (float) ( imageCaptureRegion.top - sin_rad * getPaddingTop() + cos_rad * getPaddingTop() );
+			float x2 = (float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() );
+			float y2 = (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() );
+			float x3 = testPoint[2];
+			float y3 = testPoint[3];
+			float x4 = testPoint[6];
+			float y4 = testPoint[7];
+
+			double numerator2 = ( x1 * y2 - y1 * x2 ) * ( y3 - y4 ) - ( y1 - y2 ) * ( x3 * y4 - y3 * x4 );
+			double denominator2 = ( ( x1 - x2 ) * ( y3 - y4 ) - ( y1 - y2 ) * ( x3 - x4 ) );
+
+			double Px = imageCaptureRegion.right + getPaddingRight();
+			double Py = ( numerator2 ) / ( denominator2 ) + getPaddingBottom();
+
+			orientation = getResources().getConfiguration().orientation;
+			if ( orientation == Configuration.ORIENTATION_LANDSCAPE && currentNewPosition > 0 ) {
+				Py = ( numerator2 ) / ( denominator2 ) + sin_rad * getPaddingBottom();
+			}
+
+			double dx = Px - x2;
+			double dy = Py - y2;
+
+			if ( currentNewPosition < 0 ) {
+				dx = Px - x1;
+				dy = Py - y1;
+			}
+
+			double distance = Math.sqrt( dx * dx + dy * dy );
+			double amountNeededToGrow = ( 2 * distance * ( Math.sin( Math.toRadians( Math.abs( currentNewPosition ) ) ) ) );
+			distance = Math.sqrt( ( testPoint[0] - testPoint[2] ) * ( testPoint[0] - testPoint[2] ) );
+
+			if ( currentNewPosition != 0 ) {
+				growthFactor = ( distance + amountNeededToGrow ) / distance;
+				mStraightenMatrix.postScale( (float) growthFactor, (float) growthFactor, center.x, center.y );
+
+			} else {
+				growthFactor = 1;
+			}
+			// intersectx = (float) Px;
+			// intersecty = (float) Py;
+
+		}
+
+		else {
+
+			final double sin_rad = Math.sin( Math.toRadians( currentNewPosition ) );
+			final double cos_rad = Math.cos( Math.toRadians( currentNewPosition ) );
+
+			float[] testPoint = {
+				(float) ( imageCaptureRegion.left + sin_rad * getPaddingLeft() + cos_rad * getPaddingLeft() ), (float) ( imageCaptureRegion.top - sin_rad * getPaddingTop() + cos_rad * getPaddingLeft() ),
+				(float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() ), (float) ( imageCaptureRegion.top - sin_rad * getPaddingTop() + cos_rad * getPaddingLeft() ),
+				(float) ( imageCaptureRegion.left + sin_rad * getPaddingLeft() + cos_rad * getPaddingLeft() ), (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() ),
+				(float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() ), (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() ) };
+
+			mStraightenMatrix.mapPoints( testPoint );
+			/**
+			 * ax = testPoint[0]; ay = testPoint[1]; bx = testPoint[2]; by = testPoint[3]; cx = testPoint[4]; cy = testPoint[5]; dx =
+			 * testPoint[6]; dy = testPoint[7];
+			 */
+
+			float x1 = (float) ( imageCaptureRegion.left + sin_rad * getPaddingLeft() + cos_rad * getPaddingLeft() );
+			float y1 = (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() );
+			float x2 = (float) ( imageCaptureRegion.right + sin_rad * getPaddingRight() + cos_rad * getPaddingRight() );
+			float y2 = (float) ( imageCaptureRegion.bottom - sin_rad * getPaddingBottom() + cos_rad * getPaddingBottom() );
+			float x3 = testPoint[4];
+			float y3 = testPoint[5];
+			float x4 = testPoint[6];
+			float y4 = testPoint[7];
+
+			double numerator1 = ( x1 * y2 - y1 * x2 ) * ( x3 - x4 ) - ( x1 - x2 ) * ( x3 * y4 - y3 * x4 );
+			double denominator1 = ( ( x1 - x2 ) * ( y3 - y4 ) - ( y1 - y2 ) * ( x3 - x4 ) );
+
+			double Px = ( numerator1 ) / ( denominator1 ) + getPaddingLeft();
+			double Py = imageCaptureRegion.bottom + getPaddingBottom();
+			double dx = Px - x1;
+			double dy = Py - y1;
+
+			if ( newPosition < 0 ) {
+				dx = Px - x2;
+				dy = Py - y2;
+			}
+
+			double distance = Math.sqrt( dx * dx + dy * dy );
+			double amountNeededToGrow = ( 2 * distance * ( Math.sin( Math.toRadians( Math.abs( newPosition ) ) ) ) );
+			distance = Math.sqrt( ( testPoint[5] - testPoint[1] ) * ( testPoint[5] - testPoint[1] ) );
+
+			if ( newPosition != 0 ) {
+				growthFactor = ( distance + amountNeededToGrow ) / distance;
+				mStraightenMatrix.postScale( (float) growthFactor, (float) growthFactor, center.x, center.y );
+
+			} else {
+				growthFactor = 1;
+			}
+			// intersectx = (float) Px;
+			// intersecty = (float) Py;
+		}
+
+		// now the resize-grow stuff
+		prevGrowth = growthFactor;
+
+	}
+
+	/**
+	 * 
+	 * The top level call for the straightening of the image
+	 * 
+	 * @param newPosition
+	 *           - the destination angle for the image
+	 * @param durationMs
+	 *           - animation time
+	 * @param direction
+	 *           - if there is increase or decrease of angle of rotation
+	 */
+	public void straighten( final double newPosition, final float posx, final int durationMs ) {
+
+		if ( mRunning ) {
+			return;
+		}
+		mRunning = true;
+		straightenStarted = true;
+		invalidate();
+		mHandler.post( new Runnable() {
+
+			@Override
+			public void run() {
+				mStraightenDrawable.setBounds( (int) ( posx - handleWidth ), (int) ( imageCaptureRegion.bottom - handleHeight ), (int) ( posx + handleWidth ), (int) ( imageCaptureRegion.bottom + handleHeight ) );
+				setStraightenRotation( newPosition );
+				invalidate();
+				mRunning = false;
+
+				mPosX = posx;
+			}
+		} );
+	}
+
+	/**
+	 * 
+	 * The top level call for the straightening of the image
+	 * 
+	 * @param newPosition
+	 *           - the destination angle for the image
+	 * @param durationMs
+	 *           - animation time
+	 * @param direction
+	 *           - if there is increase or decrease of angle of rotation
+	 */
+	public void straightenBy( final double newPosition, final int newx, final int durationMs ) {
+
+		if ( mRunning ) {
+			return;
+		}
+
+		mRunning = true;
+		straightenStarted = true;
+
+		final long startTime = System.currentTimeMillis();
+		final int srcx = mStraightenDrawable.getBounds().centerX();
+		final double destRotation = getStraightenAngle() + newPosition;
+		final double srcRotation = getStraightenAngle();
+		invalidate();
+
+		mHandler.post( new Runnable() {
+
+			@Override
+			public void run() {
+				long now = System.currentTimeMillis();
+				float currentMs = Math.min( durationMs, now - startTime );
+				double new_rotation = ( mEasing.easeInOut( currentMs, 0, newPosition, durationMs ) );
+				double new_x = ( mEasing.easeInOut( currentMs, 0, newx, durationMs ) );
+
+				mStraightenDrawable.setBounds( (int) ( srcx + new_x - handleWidth ), (int) ( imageCaptureRegion.bottom - handleHeight ), (int) ( srcx + new_x + handleWidth ), (int) ( imageCaptureRegion.bottom + handleHeight ) );
+				setStraightenRotation( srcRotation + new_rotation );
+				invalidate();
+
+				if ( currentMs < durationMs ) {
+					mHandler.post( this );
+				} else {
+					mStraightenDrawable.setBounds( (int) ( newx - handleWidth ), (int) ( imageCaptureRegion.bottom - handleHeight ), (int) ( newx + handleWidth ), (int) ( imageCaptureRegion.bottom + handleHeight ) );
+					setStraightenRotation( destRotation );
+					invalidate();
+					mRunning = false;
+
+					if ( isReset ) {
+						straightenStarted = false;
+						onReset();
+					}
+				}
+
+			}
+		} );
+	}
+
+	private float mLastTouchX;
+	private float mPosX;
+	private boolean mIsInStraighten;
+	Rect straightenMoveRegion = new Rect();
+	Rect straightenBounds = new Rect();
+
+	final int straightenDuration = 50;
+	int previousPosition = 0;
+	boolean initTool = true;
 
 	@Override
-	public boolean onTouchEvent( MotionEvent event ) {
+	public boolean onTouchEvent( MotionEvent ev ) {
+
 		if ( !mEnableFreeRotate ) return true;
 
-		if ( isRunning() ) return true;
-		int action = event.getAction() & MotionEvent.ACTION_MASK;
-		float x = event.getX();
-		float y = event.getY();
-		if ( action == MotionEvent.ACTION_DOWN ) {
-			onTouchStart( x, y );
-		} else if ( action == MotionEvent.ACTION_MOVE ) {
-			onTouchMove( x, y );
-		} else if ( action == MotionEvent.ACTION_UP ) {
-			onTouchUp( x, y );
-		} else
-			return true;
+		final int action = ev.getAction();
+
+		if ( initStraighten ) {
+			resetStraighten();
+		}
+
+		switch ( action ) {
+			case MotionEvent.ACTION_DOWN: {
+				final float x = ev.getX();
+				final float y = ev.getY();
+				// Remember where we started
+				mLastTouchX = x;
+
+				// check if we clicked the straighten knob
+				straightenBounds.set( mStraightenDrawable.getBounds() );
+				mPosX = straightenBounds.centerX();
+				straightenMoveRegion.set( (int) imageCaptureRegion.left + getPaddingLeft(), straightenBounds.top - 50, (int) imageCaptureRegion.right + getPaddingRight(), straightenBounds.bottom + 70 );
+				mIsInStraighten = straightenMoveRegion.contains( (int) x, (int) y );
+
+				if ( !straightenBounds.contains( (int) x, (int) y ) ) {
+					// TODO: animate knob to finger position
+				}
+
+				if ( mIsInStraighten ) {
+					onTouchStart();
+				}
+
+				break;
+			}
+
+			case MotionEvent.ACTION_MOVE: {
+				final float x = ev.getX();
+				
+				@SuppressWarnings("unused")
+				final float y = ev.getY();
+
+				// Calculate the distance moved
+				final float dx = x - mLastTouchX;
+
+				// Move the object
+				mPosX += dx;
+
+				// Remember this touch position for the next move event
+				mLastTouchX = x;
+
+				if ( mIsInStraighten ) {
+					// if the move is within the straighten tool touch bounds
+					if ( mPosX > imageCaptureRegion.right ) {
+						mPosX = imageCaptureRegion.right;
+					}
+					if ( mPosX < imageCaptureRegion.left ) {
+						mPosX = imageCaptureRegion.left;
+					}
+
+					// now get the angle from the distance
+					double midPoint = getCenter().x;
+					double maxAngle = ( 45 * imageCaptureRegion.right ) / midPoint - 45;
+					double tempAngle = ( 45 * mPosX ) / midPoint - 45;
+					double angle = ( 45 * tempAngle ) / maxAngle;
+
+					straighten( - angle / 2, mPosX, straightenDuration );
+				}
+
+				// Invalidate to request a redraw
+				invalidate();
+				break;
+			}
+
+			case MotionEvent.ACTION_UP: {
+				onTouchUp();
+				mIsInStraighten = false;
+				mLastTouchX = 0;
+				break;
+			}
+
+			case MotionEvent.ACTION_CANCEL:
+				mIsInStraighten = false;
+				mLastTouchX = 0;
+				break;
+
+		}
 
 		return true;
 	}
@@ -904,8 +1220,7 @@ public class AdjustImageView extends View {
 	}
 
 	/** The Constant sS2FArray. */
-	private static final Matrix.ScaleToFit[] sS2FArray = {
-		Matrix.ScaleToFit.FILL, Matrix.ScaleToFit.START, Matrix.ScaleToFit.CENTER, Matrix.ScaleToFit.END };
+	private static final Matrix.ScaleToFit[] sS2FArray = { Matrix.ScaleToFit.FILL, Matrix.ScaleToFit.START, Matrix.ScaleToFit.CENTER, Matrix.ScaleToFit.END };
 
 	/**
 	 * Scale type to scale to fit.
@@ -919,11 +1234,6 @@ public class AdjustImageView extends View {
 		return sS2FArray[st.nativeInt - 1];
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#onLayout(boolean, int, int, int, int)
-	 */
 	@Override
 	protected void onLayout( boolean changed, int left, int top, int right, int bottom ) {
 		super.onLayout( changed, left, top, right, bottom );
@@ -949,11 +1259,6 @@ public class AdjustImageView extends View {
 		}
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#onMeasure(int, int)
-	 */
 	@Override
 	protected void onMeasure( int widthMeasureSpec, int heightMeasureSpec ) {
 		resolveUri();
@@ -980,8 +1285,15 @@ public class AdjustImageView extends View {
 		} else {
 			w = mDrawableWidth;
 			h = mDrawableHeight;
+
 			if ( w <= 0 ) w = 1;
 			if ( h <= 0 ) h = 1;
+
+			if ( mDrawableHeight > mDrawableWidth ) {
+				portrait = true;
+			}
+
+			orientation = getResources().getConfiguration().orientation;
 
 			// We are supposed to adjust view bounds to match the aspect
 			// ratio of our drawable. See if that is possible.
@@ -1055,6 +1367,8 @@ public class AdjustImageView extends View {
 		}
 
 		setMeasuredDimension( widthSize, heightSize );
+
+		// drawResource();
 	}
 
 	/**
@@ -1192,22 +1506,18 @@ public class AdjustImageView extends View {
 				mDrawMatrix.postScale( invertScale, invertScale, vwidth / 2, vheight / 2 );
 
 				mRotateMatrix.reset();
+				mStraightenMatrix.reset();
 				mFlipMatrix.reset();
 				mFlipType = FlipType.FLIP_NONE.nativeInt;
 				mRotation = 0;
 				mRotateMatrix.postScale( mCurrentScale, mCurrentScale, vwidth / 2, vheight / 2 );
-
+				// mStraightenMatrix.postScale( mCurrentScale, mCurrentScale, vwidth / 2, vheight / 2 );
 				mDrawRect = getImageRect();
-				mCenter = getCenter();
+				getCenter();
 			}
 		}
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#drawableStateChanged()
-	 */
 	@Override
 	protected void drawableStateChanged() {
 		super.drawableStateChanged();
@@ -1243,14 +1553,15 @@ public class AdjustImageView extends View {
 			if ( mCropToPadding ) {
 				final int scrollX = getScrollX();
 				final int scrollY = getScrollY();
-				canvas.clipRect( scrollX + mPaddingLeft, scrollY + mPaddingTop, scrollX + getRight() - getLeft() - mPaddingRight,
-						scrollY + getBottom() - getTop() - mPaddingBottom );
+				canvas.clipRect( scrollX + mPaddingLeft, scrollY + mPaddingTop, scrollX + getRight() - getLeft() - mPaddingRight, scrollY + getBottom() - getTop() - mPaddingBottom );
 			}
 
 			canvas.translate( mPaddingLeft, mPaddingTop );
 
 			if ( mFlipMatrix != null ) canvas.concat( mFlipMatrix );
 			if ( mRotateMatrix != null ) canvas.concat( mRotateMatrix );
+			//
+			if ( mStraightenMatrix != null ) canvas.concat( mStraightenMatrix );
 			if ( mDrawMatrix != null ) canvas.concat( mDrawMatrix );
 
 			mDrawable.draw( canvas );
@@ -1266,81 +1577,141 @@ public class AdjustImageView extends View {
 				mInversePath.reset();
 				mLinesPath.reset();
 
-				float[] points = new float[] {
-					mDrawRect.left, mDrawRect.top, mDrawRect.right, mDrawRect.top, mDrawRect.right, mDrawRect.bottom, mDrawRect.left,
-					mDrawRect.bottom };
+				float[] points = new float[] { mDrawRect.left, mDrawRect.top, mDrawRect.right, mDrawRect.top, mDrawRect.right, mDrawRect.bottom, mDrawRect.left, mDrawRect.bottom };
 
-				Matrix matrix = new Matrix( mDrawMatrix );
-				matrix.postConcat( mRotateMatrix );
-				matrix.mapPoints( points );
+				mTempMatrix.set( mDrawMatrix );
+				mTempMatrix.postConcat( mRotateMatrix );
+				mTempMatrix.postConcat( mStraightenMatrix );
+				mTempMatrix.mapPoints( points );
 
-				RectF invertRect = new RectF( mViewDrawRect );
-				invertRect.top -= mPaddingLeft;
-				invertRect.left -= mPaddingTop;
-				
-				mInversePath.addRect( invertRect, Path.Direction.CW );
+				mViewInvertRect.set( mViewDrawRect );
+				mViewInvertRect.top -= mPaddingLeft;
+				mViewInvertRect.left -= mPaddingTop;
+
+				mInversePath.addRect( mViewInvertRect, Path.Direction.CW );
 
 				double sx = Point2D.distance( points[2], points[3], points[0], points[1] );
 				double sy = Point2D.distance( points[6], points[7], points[0], points[1] );
 				double angle = getAngle90( mRotation );
-
 				RectF rect;
+				if ( initStraighten ) {
 
-				if ( angle < 45 ) {
-					rect = crop( (float) sx, (float) sy, angle, mDrawableWidth, mDrawableHeight, mCenter, null );
+					if ( angle < 45 ) {
+						rect = crop( (float) sx, (float) sy, angle, mDrawableWidth, mDrawableHeight, getCenter(), null );
+					} else {
+						rect = crop( (float) sx, (float) sy, angle, mDrawableHeight, mDrawableWidth, getCenter(), null );
+					}
+
+					float colStep = (float) rect.height() / grid_cols;
+					float rowStep = (float) rect.width() / grid_rows;
+
+					for ( int i = 1; i < grid_cols; i++ ) {
+						// mLinesPath.addRect( (int)rect.left, (int)(rect.top + colStep * i), (int)rect.right, (int)(rect.top + colStep *
+						// i) + 3, Path.Direction.CW );
+						mLinesPath.moveTo( (int) rect.left, (int) ( rect.top + colStep * i ) );
+						mLinesPath.lineTo( (int) rect.right, (int) ( rect.top + colStep * i ) );
+					}
+
+					for ( int i = 1; i < grid_rows; i++ ) {
+						// mLinesPath.addRect( (int)(rect.left + rowStep * i), (int)rect.top, (int)(rect.left + rowStep * i) + 3,
+						// (int)rect.bottom, Path.Direction.CW );
+						mLinesPath.moveTo( (int) ( rect.left + rowStep * i ), (int) rect.top );
+						mLinesPath.lineTo( (int) ( rect.left + rowStep * i ), (int) rect.bottom );
+					}
+					imageCaptureRegion = rect;
+					PointF center = getCenter();
+					mStraightenDrawable.setBounds( (int) ( center.x - handleWidth ), (int) ( imageCaptureRegion.bottom - handleHeight ), (int) ( center.x + handleWidth ), (int) ( imageCaptureRegion.bottom + handleHeight ) );
+					mPosX = center.x;
+					initStraighten = false;
 				} else {
-					rect = crop( (float) sx, (float) sy, angle, mDrawableHeight, mDrawableWidth, mCenter, null );
-				}
+					rect = imageCaptureRegion;
+					float colStep = (float) rect.height() / grid_cols;
+					float rowStep = (float) rect.width() / grid_rows;
 
-				float colStep = (float) rect.height() / grid_cols;
-				float rowStep = (float) rect.width() / grid_rows;
+					for ( int i = 1; i < grid_cols; i++ ) {
+						// mLinesPath.addRect( (int)rect.left, (int)(rect.top + colStep * i), (int)rect.right, (int)(rect.top + colStep *
+						// i) + 3, Path.Direction.CW );
+						mLinesPath.moveTo( (int) rect.left, (int) ( rect.top + colStep * i ) );
+						mLinesPath.lineTo( (int) rect.right, (int) ( rect.top + colStep * i ) );
+					}
 
-				for ( int i = 1; i < grid_cols; i++ ) {
-					//mLinesPath.addRect( (int)rect.left, (int)(rect.top + colStep * i), (int)rect.right, (int)(rect.top + colStep * i) + 3, Path.Direction.CW );
-					mLinesPath.moveTo( (int)rect.left, (int)(rect.top + colStep * i) );
-					mLinesPath.lineTo( (int)rect.right, (int)(rect.top + colStep * i) );
-				}
+					for ( int i = 1; i < grid_rows; i++ ) {
+						// mLinesPath.addRect( (int)(rect.left + rowStep * i), (int)rect.top, (int)(rect.left + rowStep * i) + 3,
+						// (int)rect.bottom, Path.Direction.CW );
+						mLinesPath.moveTo( (int) ( rect.left + rowStep * i ), (int) rect.top );
+						mLinesPath.lineTo( (int) ( rect.left + rowStep * i ), (int) rect.bottom );
+					}
 
-				for ( int i = 1; i < grid_rows; i++ ) {
-					//mLinesPath.addRect( (int)(rect.left + rowStep * i), (int)rect.top, (int)(rect.left + rowStep * i) + 3, (int)rect.bottom, Path.Direction.CW );
-					mLinesPath.moveTo( (int)(rect.left + rowStep * i), (int)rect.top );
-					mLinesPath.lineTo( (int)(rect.left + rowStep * i), (int)rect.bottom );
 				}
 
 				mClipPath.addRect( rect, Path.Direction.CW );
+
 				mInversePath.addRect( rect, Path.Direction.CCW );
-				
+
 				saveCount = canvas.save();
 				canvas.translate( mPaddingLeft, mPaddingTop );
-				
+
 				canvas.drawPath( mInversePath, mOutlineFill );
-				
-				//canvas.drawPath( mLinesPath, mLinesPaintShadow );
+
+				// canvas.drawPath( mLinesPath, mLinesPaintShadow );
 				canvas.drawPath( mLinesPath, mLinesPaint );
-				
+
 				canvas.drawPath( mClipPath, mOutlinePaint );
 
-				//if ( mFlipMatrix != null ) canvas.concat( mFlipMatrix );
-				//if ( mRotateMatrix != null ) canvas.concat( mRotateMatrix );
-				//if ( mDrawMatrix != null ) canvas.concat( mDrawMatrix );
+				// if ( mFlipMatrix != null ) canvas.concat( mFlipMatrix );
+				// if ( mRotateMatrix != null ) canvas.concat( mRotateMatrix );
+				// if ( mDrawMatrix != null ) canvas.concat( mDrawMatrix );
 
-				//mResizeDrawable.setBounds( (int) mDrawRect.right - handleWidth, (int) mDrawRect.bottom - handleHeight, (int) mDrawRect.right + handleWidth, (int) mDrawRect.bottom + handleHeight );
-				//mResizeDrawable.draw( canvas );
+				// mResizeDrawable.setBounds( (int) mDrawRect.right - handleWidth, (int) mDrawRect.bottom - handleHeight, (int)
+				// mDrawRect.right + handleWidth, (int) mDrawRect.bottom + handleHeight );
+				// mResizeDrawable.draw( canvas );
 
 				canvas.restoreToCount( saveCount );
-				
+
 				saveCount = canvas.save();
 				canvas.translate( mPaddingLeft, mPaddingTop );
-				mResizeDrawable.setBounds( (int)(points[4] - handleWidth), (int)(points[5] - handleHeight), (int)(points[4] + handleWidth), (int)(points[5] + handleHeight) );
-				mResizeDrawable.draw( canvas );
+				// mResizeDrawable.setBounds( (int)(points[4] - handleWidth), (int)(points[5] - handleHeight), (int)(points[4] +
+				// handleWidth), (int)(points[5] + handleHeight) );
+				// mResizeDrawable.draw( canvas );
+
+				mStraightenDrawable.draw( canvas );
+
 				canvas.restoreToCount( saveCount );
 
 			}
+			/**
+			 * if(intersectPoints){ //intersectPaint.setColor(Color.YELLOW); //canvas.drawCircle(intersectx, intersecty, 10,
+			 * intersectPaint); //canvas.drawLine(trueRect.left + getPaddingLeft(), trueRect.bottom + getPaddingBottom(),
+			 * trueRect.right + getPaddingRight(), trueRect.bottom+ getPaddingBottom(), intersectPaint); //canvas.drawRect(testRect,
+			 * intersectPaint); }
+			 */
+
 		}
 	}
 
+	float ax = 0;
+	float ay = 0;
+	float bx = 0;
+	float by = 0;
+	float cx = 0;
+	float cy = 0;
+	float dx = 0;
+	float dy = 0;
+
+	float intersectx = 0;
+	float intersecty = 0;
+
+	Paint intersectPaint = new Paint();
+	RectF imageCaptureRegion = null;
+	boolean initStraighten = true;
+	Matrix rotateCopy;
+	boolean firstDraw = true;
 	Handler mFadeHandler = new Handler();
 	boolean mFadeHandlerStarted;
+
+	public void setInitStraighten( boolean value ) {
+		initStraighten = value;
+	}
 
 	protected void fadeinGrid( final int durationMs ) {
 
@@ -1356,12 +1727,11 @@ public class AdjustImageView extends View {
 				long now = System.currentTimeMillis();
 
 				float currentMs = Math.min( durationMs, now - startTime );
-
 				float new_alpha_lines = (float) easing.easeNone( currentMs, startAlpha, mLinesAlpha, durationMs );
 				float new_alpha_lines_shadow = (float) easing.easeNone( currentMs, startAlphaShadow, mLinesShadowAlpha, durationMs );
 
 				mLinesPaint.setAlpha( (int) new_alpha_lines );
-				mLinesPaintShadow.setAlpha( (int ) new_alpha_lines_shadow );
+				mLinesPaintShadow.setAlpha( (int) new_alpha_lines_shadow );
 				invalidate();
 
 				if ( currentMs < durationMs ) {
@@ -1393,8 +1763,8 @@ public class AdjustImageView extends View {
 				float new_alpha_lines = (float) easing.easeNone( currentMs, 0, startAlpha, durationMs );
 				float new_alpha_lines_shadow = (float) easing.easeNone( currentMs, 0, startAlphaShadow, durationMs );
 
-				mLinesPaint.setAlpha( (int)startAlpha - (int) new_alpha_lines );
-				mLinesPaintShadow.setAlpha( (int)startAlphaShadow - (int) new_alpha_lines_shadow );
+				mLinesPaint.setAlpha( (int) startAlpha - (int) new_alpha_lines );
+				mLinesPaintShadow.setAlpha( (int) startAlphaShadow - (int) new_alpha_lines_shadow );
 				invalidate();
 
 				if ( currentMs < durationMs ) {
@@ -1409,7 +1779,6 @@ public class AdjustImageView extends View {
 	}
 
 	protected void fadeinOutlines( final int durationMs ) {
-
 		if ( mFadeHandlerStarted ) return;
 		mFadeHandlerStarted = true;
 
@@ -1449,6 +1818,53 @@ public class AdjustImageView extends View {
 		} );
 	}
 
+	protected void fadeoutOutlines( final int durationMs ) {
+
+		final long startTime = System.currentTimeMillis();
+		final Linear easing = new Linear();
+
+		final int alpha1 = mOutlineFill.getAlpha();
+		final int alpha2 = mOutlinePaint.getAlpha();
+		final int alpha3 = mLinesPaint.getAlpha();
+		final int alpha4 = mLinesPaintShadow.getAlpha();
+
+		mFadeHandler.post( new Runnable() {
+
+			@Override
+			public void run() {
+				long now = System.currentTimeMillis();
+
+				float currentMs = Math.min( durationMs, now - startTime );
+
+				float new_alpha_fill = (float) easing.easeNone( currentMs, alpha1, 0, durationMs );
+				float new_alpha_paint = (float) easing.easeNone( currentMs, alpha2, 0, durationMs );
+				float new_alpha_lines = (float) easing.easeNone( currentMs, alpha3, 0, durationMs );
+				float new_alpha_lines_shadow = (float) easing.easeNone( currentMs, alpha4, 0, durationMs );
+
+				mOutlineFill.setAlpha( (int) new_alpha_fill );
+				mOutlinePaint.setAlpha( (int) new_alpha_paint );
+				mLinesPaint.setAlpha( (int) new_alpha_lines );
+				mLinesPaintShadow.setAlpha( (int) new_alpha_lines_shadow );
+				invalidate();
+
+				if ( currentMs < durationMs ) {
+					mFadeHandler.post( this );
+				} else {
+					hideOutlines();
+				}
+			}
+		} );
+	}
+
+	protected void hideOutlines() {
+		mFadeHandlerStarted = false;
+		mOutlineFill.setAlpha( 0 );
+		mOutlinePaint.setAlpha( 0 );
+		mLinesPaint.setAlpha( 0 );
+		mLinesPaintShadow.setAlpha( 0 );
+		invalidate();
+	}
+
 	static double getAngle90( double value ) {
 
 		double rotation = Point2D.angle360( value );
@@ -1464,13 +1880,10 @@ public class AdjustImageView extends View {
 		return angle;
 	}
 
-	RectF crop( float originalWidth, float originalHeight, double angle, float targetWidth, float targetHeight, PointF center,
-			Canvas canvas ) {
+	RectF crop( float originalWidth, float originalHeight, double angle, float targetWidth, float targetHeight, PointF center, Canvas canvas ) {
 		double radians = Point2D.radians( angle );
 
-		PointF[] original = new PointF[] {
-			new PointF( 0, 0 ), new PointF( originalWidth, 0 ), new PointF( originalWidth, originalHeight ),
-			new PointF( 0, originalHeight ) };
+		PointF[] original = new PointF[] { new PointF( 0, 0 ), new PointF( originalWidth, 0 ), new PointF( originalWidth, originalHeight ), new PointF( 0, originalHeight ) };
 
 		Point2D.translate( original, -originalWidth / 2, -originalHeight / 2 );
 
@@ -1685,10 +2098,10 @@ public class AdjustImageView extends View {
 	/** The m handler. */
 	protected Handler mHandler = new Handler();
 
-	/** The m rotation. */
+	/** The image rotation rotation. */
 	protected double mRotation = 0;
 
-	/** The m current scale. */
+	/** The image scale. */
 	protected float mCurrentScale = 0;
 
 	/** The m running. */
@@ -1705,6 +2118,12 @@ public class AdjustImageView extends View {
 	public void rotate90( boolean cw, int durationMs ) {
 		final double destRotation = ( cw ? 90 : -90 );
 		rotateBy( destRotation, durationMs );
+		hideOutlines();
+		portrait = !portrait;
+	}
+
+	public boolean getStraightenStarted() {
+		return straightenStarted;
 	}
 
 	/**
@@ -1748,6 +2167,7 @@ public class AdjustImageView extends View {
 				setImageRotation( mRotation, false );
 
 				old_rotation = new_rotation;
+				initStraighten = true;
 				invalidate();
 
 				if ( currentMs < durationMs ) {
@@ -1755,6 +2175,7 @@ public class AdjustImageView extends View {
 				} else {
 					mRotation = Point2D.angle360( destRotation );
 					setImageRotation( mRotation, true );
+					initStraighten = true;
 					invalidate();
 					printDetails();
 
@@ -1766,6 +2187,24 @@ public class AdjustImageView extends View {
 				}
 			}
 		} );
+
+		if ( straightenStarted && !isReset ) {
+			initStraighten = true;
+			resetStraighten();
+			invalidate();
+		}
+	}
+
+	private void resetStraighten() {
+		mStraightenMatrix.reset();
+		straightenStarted = false;
+		previousStraightenAngle = 0;
+		prevGrowth = 1;
+		prevGrowthAngle = 0;
+		currentNewPosition = 0;
+		testStraighten = true;
+		currentGrowth = 0;
+		previousAngle = 0;
 	}
 
 	/**
@@ -1773,10 +2212,9 @@ public class AdjustImageView extends View {
 	 */
 	public void printDetails() {
 		Log.i( LOG_TAG, "details:" );
-		Log.d( LOG_TAG, "	flip horizontal: "
-				+ ( ( mFlipType & FlipType.FLIP_HORIZONTAL.nativeInt ) == FlipType.FLIP_HORIZONTAL.nativeInt ) );
-		Log.d( LOG_TAG, "	flip vertical: " + ( ( mFlipType & FlipType.FLIP_VERTICAL.nativeInt ) == FlipType.FLIP_VERTICAL.nativeInt ) );
-		Log.d( LOG_TAG, "	rotation: " + mRotation );
+		Log.d( LOG_TAG, " flip horizontal: " + ( ( mFlipType & FlipType.FLIP_HORIZONTAL.nativeInt ) == FlipType.FLIP_HORIZONTAL.nativeInt ) );
+		Log.d( LOG_TAG, " flip vertical: " + ( ( mFlipType & FlipType.FLIP_VERTICAL.nativeInt ) == FlipType.FLIP_VERTICAL.nativeInt ) );
+		Log.d( LOG_TAG, " rotation: " + mRotation );
 		Log.d( LOG_TAG, "--------" );
 	}
 
@@ -1790,6 +2228,7 @@ public class AdjustImageView extends View {
 	 */
 	public void flip( boolean horizontal, int durationMs ) {
 		flipTo( horizontal, durationMs );
+		hideOutlines();
 	}
 
 	/** The m camera enabled. */
@@ -1876,9 +2315,9 @@ public class AdjustImageView extends View {
 						mDrawMatrix.postScale( 1, -1, centerx, centery );
 					}
 
+					// Problem is HERE!
 					mRotateMatrix.postRotate( (float) ( -mRotation * 2 ), centerx, centery );
 					mRotation = Point2D.angle360( getRotationFromMatrix( mRotateMatrix ) );
-
 					mFlipMatrix.reset();
 
 					invalidate();
@@ -1892,10 +2331,17 @@ public class AdjustImageView extends View {
 				}
 			}
 		} );
+
+		if ( straightenStarted && !isReset ) {
+			initStraighten = true;
+			resetStraighten();
+			invalidate();
+		}
 	}
 
 	private void flip( boolean horizontal, boolean vertical ) {
 
+		invalidate();
 		PointF center = getCenter();
 
 		if ( horizontal ) {
@@ -1973,11 +2419,6 @@ public class AdjustImageView extends View {
 		public final int nativeInt;
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#getRotation()
-	 */
 	public float getRotation() {
 		return (float) mRotation;
 	}
@@ -2037,12 +2478,28 @@ public class AdjustImageView extends View {
 	 */
 	private void onReset() {
 		if ( isReset ) {
+			double rotation = (double) getRotation();
+			double straightenRotation = getStraightenAngle();
+			boolean resetStraighten = getStraightenStarted();
+			straightenStarted = false;
+
+			rotation = rotation % 360;
+			if ( rotation > 180 ) {
+				rotation = rotation - 360;
+			}
+
 			final boolean hflip = getHorizontalFlip();
 			final boolean vflip = getVerticalFlip();
 			boolean handled = false;
+			initStraighten = false;
+			invalidate();
 
-			if ( mRotation != 0 ) {
-				rotateBy( -mRotation, resetAnimTime );
+			if ( rotation != 0 || resetStraighten ) {
+				if ( resetStraighten ) {
+					straightenBy( -straightenRotation, (int) getCenter().x, resetAnimTime );
+				} else {
+					rotateBy( -rotation, resetAnimTime );
+				}
 				handled = true;
 			}
 
@@ -2068,6 +2525,24 @@ public class AdjustImageView extends View {
 	private void fireOnResetComplete() {
 		if ( mResetListener != null ) {
 			mResetListener.onResetComplete();
+		}
+	}
+
+	/**
+	 *
+	 */
+	@Override
+	protected void onConfigurationChanged( Configuration newConfig ) {
+		// TODO
+		// During straighten, we must bring it to the start if orientation is changed
+		orientation = getResources().getConfiguration().orientation;
+		initStraighten = true;
+		mCenter = null;
+		invalidate();
+		if ( straightenStarted ) {
+			initStraighten = true;
+			resetStraighten();
+			invalidate();
 		}
 	}
 }

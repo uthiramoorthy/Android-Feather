@@ -21,7 +21,9 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.Vibrator;
 import android.util.AttributeSet;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.GestureDetector;
 import android.view.GestureDetector.OnGestureListener;
 import android.view.MotionEvent;
@@ -30,13 +32,14 @@ import android.view.ViewConfiguration;
 import com.aviary.android.feather.R;
 import com.aviary.android.feather.graphics.LinearGradientDrawable;
 import com.aviary.android.feather.library.utils.ReflectionUtils;
+import com.aviary.android.feather.library.utils.ReflectionUtils.ReflectionException;
 import com.aviary.android.feather.widget.IFlingRunnable.FlingRunnableView;
 
 // TODO: Auto-generated Javadoc
 /**
  * The Class Wheel.
  */
-public class Wheel extends View implements OnGestureListener, FlingRunnableView {
+public class Wheel extends View implements OnGestureListener, FlingRunnableView, VibrationWidget {
 
 	/** The Constant LOG_TAG. */
 	static final String LOG_TAG = "wheel";
@@ -89,6 +92,11 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		void onScrollFinished( Wheel view, float value, int roundValue );
 	}
 
+	public interface OnLayoutListener {
+
+		void onLayout( View view );
+	}
+
 	/** The Constant MSG_VIBRATE. */
 	static final int MSG_VIBRATE = 1;
 
@@ -116,7 +124,8 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 	/** The m scroll listener. */
 	OnScrollListener mScrollListener;
 
-	/** The m paint. */
+	OnLayoutListener mLayoutListener;
+
 	Paint mPaint;
 
 	/** The m shader3. */
@@ -174,7 +183,20 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 	Vibrator mVibrator;
 
 	/** The m vibration handler. */
-	Handler mVibrationHandler;
+	static Handler mVibrationHandler;
+
+	/** The m ticks easing. */
+	Easing mTicksEasing = new Sine();
+
+	/** The m draw matrix. */
+	Matrix mDrawMatrix = new Matrix();
+	
+	/** The m force layout. */
+	boolean mForceLayout;
+
+	private int[] mBgColors = { 0xffa1a1a1, 0xffa1a1a1, 0xffffffff, 0xffa1a1a1, 0xffa1a1a1 };
+
+	private float[] mBgPositions = { 0, 0.2f, 0.5f, 0.8f, 1f };	
 
 	/**
 	 * Instantiates a new wheel.
@@ -223,19 +245,27 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		mScrollListener = listener;
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#setPadding(int, int, int, int)
-	 */
-	@Override
-	public void setPadding( int left, int top, int right, int bottom ) {
-		super.setPadding( left, top, right, bottom );
-		// mPaddingLeft = left;
-		// mPaddingBottom = bottom;
-		// mPaddingTop = top;
-		// mPaddingRight = right;
+	public void setOnLayoutListener( OnLayoutListener listener ) {
+		mLayoutListener = listener;
 	}
+
+	/**
+	 * change the current wheel position and value
+	 * @param value - the new value. it should be between -1.0f and 1.0f
+	 * @param fireScrollEvent - if true this will call the scrollCompletion listener
+	 */
+	public void setValue( float value, boolean fireScrollEvent ) {
+		if( value >= -1 && value <= 1 ) {
+			int w = getRealWidth();
+			mFlingRunnable.stop( false );
+			mOriginalDeltaX = (int) ( value * ( w * mWheelSizeFactor ) );
+			invalidate();
+			
+			if( fireScrollEvent ) {
+				scrollCompleted();
+			}
+		}
+	}		
 
 	/**
 	 * Inits the.
@@ -249,11 +279,16 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 	 */
 	private void init( Context context, AttributeSet attrs, int defStyle ) {
 
-		if ( android.os.Build.VERSION.SDK_INT > 8 )
-			mFlingRunnable = (IFlingRunnable) ReflectionUtils.newInstance( "com.aviary.android.feather.widget.Fling9Runnable",
-					new Class<?>[] { FlingRunnableView.class, int.class }, this, mAnimationDuration );
-		else
+		if ( android.os.Build.VERSION.SDK_INT > 8 ) {
+			try {
+				mFlingRunnable = (IFlingRunnable) ReflectionUtils.newInstance( "com.aviary.android.feather.widget.Fling9Runnable",
+						new Class<?>[] { FlingRunnableView.class, int.class }, this, mAnimationDuration );
+			} catch ( ReflectionException e ) {
+				mFlingRunnable = new Fling8Runnable( this, mAnimationDuration );
+			}
+		} else {
 			mFlingRunnable = new Fling8Runnable( this, mAnimationDuration );
+		}
 
 		TypedArray a = context.obtainStyledAttributes( attrs, R.styleable.Wheel, defStyle, 0 );
 
@@ -270,8 +305,12 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		setFocusable( true );
 		setFocusableInTouchMode( true );
 
-		mTouchSlop = ViewConfiguration.getTouchSlop();
-
+		mTouchSlop = ViewConfiguration.get( context ).getScaledTouchSlop();
+		
+		DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+		
+		TypedValue.complexToDimensionPixelSize( 25, metrics  );
+		
 		try {
 			mVibrator = (Vibrator) context.getSystemService( Context.VIBRATOR_SERVICE );
 		} catch ( Exception e ) {
@@ -282,39 +321,39 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 			setVibrationEnabled( true );
 		}
 
-		int[] colors = { 0xffa1a1a1, 0xffa1a1a1, 0xffffffff, 0xffa1a1a1, 0xffa1a1a1 };
-		float[] positions = { 0, 0.2f, 0.5f, 0.8f, 1f };
-		setBackgroundDrawable( new LinearGradientDrawable( Orientation.LEFT_RIGHT, colors, positions ) );
+		setBackgroundDrawable( new LinearGradientDrawable( Orientation.LEFT_RIGHT, mBgColors, mBgPositions ) );
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#setBackgroundColor(int)
-	 */
+
 	@Override
-	public void setBackgroundColor( int color ) {
-		super.setBackgroundColor( color );
+	public synchronized void setVibrationEnabled( boolean value ) {
+		if ( !value ) {
+			mVibrationHandler = null;
+		} else {
+			if ( null == mVibrationHandler ) {
+				mVibrationHandler = new Handler() {
+
+					@Override
+					public void handleMessage( Message msg ) {
+						super.handleMessage( msg );
+
+						switch ( msg.what ) {
+							case MSG_VIBRATE:
+								try {
+									mVibrator.vibrate( 10 );
+								} catch ( SecurityException e ) {
+									// missing VIBRATE permission
+								}
+						}
+					}
+				};
+			}
+		}
 	}
 
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#setBackgroundDrawable(android.graphics.drawable.Drawable)
-	 */
 	@Override
-	public void setBackgroundDrawable( Drawable d ) {
-		super.setBackgroundDrawable( d );
-	}
-
-	/*
-	 * (non-Javadoc)
-	 * 
-	 * @see android.view.View#setBackgroundResource(int)
-	 */
-	@Override
-	public void setBackgroundResource( int resid ) {
-		super.setBackgroundResource( resid );
+	public synchronized boolean getVibrationEnabled() {
+		return mVibrationHandler != null;
 	}
 
 	/**
@@ -362,15 +401,20 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		p.setDither( true );
 
 		p.setColor( 0xFF888888 );
-		RectF rect = new RectF( 0, 10, width, height - 25 );
+		
+		float h = (float)height;
+		float y = (h+10.0f)/10.0f;
+		float y2 = y*2.5f;
+		
+		RectF rect = new RectF( 0, y, width, height - y2 );
 		c.drawRoundRect( rect, ellipse, ellipse, p );
 
 		p.setColor( 0xFFFFFFFF );
-		rect = new RectF( 0, 25, width, height - 10 );
+		rect = new RectF( 0, y2, width, height - y );
 		c.drawRoundRect( rect, ellipse, ellipse, p );
 
 		p.setColor( 0xFFCCCCCC );
-		rect = new RectF( 0, 12, width, height - 12 );
+		rect = new RectF( 0, y+2, width, height - (y+2) );
 		c.drawRoundRect( rect, ellipse, ellipse, p );
 		return bm;
 	}
@@ -387,6 +431,9 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 	private static Bitmap makeBitmapIndicator( int width, int height ) {
 
 		float ellipse = width / 2;
+		float h = (float)height;
+		float y = (h+10.0f)/10.0f;
+		float y2 = y*2.5f;		
 
 		Bitmap bm = Bitmap.createBitmap( width, height, Bitmap.Config.ARGB_8888 );
 		Canvas c = new Canvas( bm );
@@ -395,14 +442,14 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		p.setDither( true );
 
 		p.setColor( 0xFF666666 );
-		RectF rect = new RectF( 0, 10, width, height - 25 );
+		RectF rect = new RectF( 0, y, width, height - y2 );
 		c.drawRoundRect( rect, ellipse, ellipse, p );
 
 		p.setColor( 0xFFFFFFFF );
-		rect = new RectF( 0, 25, width, height - 10 );
+		rect = new RectF( 0, y2, width, height - y );
 		c.drawRoundRect( rect, ellipse, ellipse, p );
 
-		rect = new RectF( 0, 12, width, height - 12 );
+		rect = new RectF( 0, y+2, width, height - (y+2) );
 		int colors[] = { 0xFF0076E7, 0xFF00BBFF, 0xFF0076E7 };
 		float positions[] = { 0f, 0.5f, 1f };
 		LinearGradient gradient = new LinearGradient( 0, 0, width, 0, colors, positions, TileMode.REPEAT );
@@ -413,11 +460,6 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		return bm;
 	}
 
-	/** The m ticks easing. */
-	Easing mTicksEasing = new Sine();
-
-	/** The m draw matrix. */
-	Matrix mDrawMatrix = new Matrix();
 
 	/*
 	 * (non-Javadoc)
@@ -480,22 +522,20 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		}
 	}
 
-	/*
-	 * (non-Javadoc)
+
+	/**
+	 * Change the background gradient colors. the size of the colors array must be the same as the size of the positions array.
 	 * 
-	 * @see android.view.View#onDetachedFromWindow()
+	 * @param colors
+	 * @param positions
 	 */
-	@Override
-	protected void onDetachedFromWindow() {
-		super.onDetachedFromWindow();
-
-		// if ( mVibrationHandlerThread != null ) {
-		// mVibrationHandlerThread.quit();
-		// }
-	}
-
-	/** The m force layout. */
-	boolean mForceLayout;
+	public void setBackgroundColors( int[] colors, float[] positions ) {
+		if ( colors != null && positions != null && colors.length == positions.length ) {
+			mBgColors = colors;
+			mBgPositions = positions;
+			setBackgroundDrawable( new LinearGradientDrawable( Orientation.LEFT_RIGHT, mBgColors, mBgPositions ) );
+		}
+	}		
 
 	/**
 	 * Sets the wheel scale factor.
@@ -508,31 +548,6 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 		mForceLayout = true;
 		requestLayout();
 		postInvalidate();
-	}
-
-	public void setVibrationEnabled( boolean value ) {
-		if ( !value ) {
-			mVibrationHandler = null;
-		} else {
-			if ( null == mVibrationHandler ) {
-				mVibrationHandler = new Handler() {
-
-					@Override
-					public void handleMessage( Message msg ) {
-						super.handleMessage( msg );
-
-						switch ( msg.what ) {
-							case MSG_VIBRATE:
-								try {
-									mVibrator.vibrate( 10 );
-								} catch ( SecurityException e ) {
-									// missing VIBRATE permission
-								}
-						}
-					}
-				};
-			}
-		}
 	}
 
 	/**
@@ -583,6 +598,10 @@ public class Wheel extends View implements OnGestureListener, FlingRunnableView 
 			mShader3 = new BitmapShader( makeBitmap3( right - left, bottom - top ), Shader.TileMode.CLAMP, Shader.TileMode.REPEAT );
 
 			mMinX = -mMaxX;
+
+			if ( null != mLayoutListener ) {
+				mLayoutListener.onLayout( this );
+			}
 		}
 
 		mInLayout = false;

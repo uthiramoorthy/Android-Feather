@@ -1,19 +1,19 @@
 package com.aviary.android.feather.async_tasks;
 
-import android.content.Context;
 import android.os.Bundle;
 import com.aviary.android.feather.library.media.ExifInterfaceWrapper;
-import com.aviary.android.feather.library.services.ThreadPoolService.BGCallable;
+import com.aviary.android.feather.library.services.EffectContext;
+import com.aviary.android.feather.library.services.ThreadPoolService.BackgroundCallable;
 
-public class ExifTask extends BGCallable<String, Bundle> {
+public class ExifTask extends BackgroundCallable<String, Bundle> {
 
 	@Override
-	public Bundle call( Context context, String path ) {
+	public Bundle call( EffectContext context, String path ) {
 
-		if( path == null ){
+		if ( path == null ) {
 			return null;
 		}
-		
+
 		Bundle result = new Bundle();
 
 		try {
